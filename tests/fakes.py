@@ -6,9 +6,14 @@ class FakeCursor:
         self.conn = conn
         self.description = None
         self._rows = []
+        self.arraysize = 100
+        self.prefetchrows = 2
+        self.set_before_execute = None
 
     def execute(self, sql, params=None):
         self.conn.log.append(("execute", sql, params))
+        if self.set_before_execute is None and not sql.startswith(("ALTER SESSION", "SET ")):
+            self.set_before_execute = {"arraysize": self.arraysize, "prefetchrows": self.prefetchrows}
         for needle, exc in self.conn.fail.items():
             if needle in sql:
                 raise exc
@@ -37,7 +42,7 @@ class FakeCursor:
         return self._rows.pop(0)
 
     def close(self):
-        pass
+        self.conn.log.append(("cursor_close",))
 
 
 class FakeConnection:
@@ -48,10 +53,13 @@ class FakeConnection:
         self.call_timeout = None
         self.closed = False
         self.cursor_args = []
+        self.cursors = []
 
     def cursor(self, *args, **kwargs):
         self.cursor_args.append(args)
-        return FakeCursor(self)
+        cur = FakeCursor(self)
+        self.cursors.append(cur)
+        return cur
 
     def rollback(self):
         self.log.append(("rollback",))

@@ -3,12 +3,18 @@
 Thứ tự (dừng ngay khi một bước từ chối):
     giới hạn độ dài -> parse_select -> plan_masking (+ bắt buộc có khóa HMAC nếu
     phải che) -> [lấy slot đồng thời] -> thống kê số dòng từng bảng -> large_tables
-    -> enforce_time_range -> apply_row_limit -> connector.explain(SQL cuối)
-    -> check_plan -> (run) connector.execute(SQL cuối) -> apply_masking.
+    -> enforce_time_range -> apply_row_limit(max_rows + 1)
+    -> connector.explain(SQL sinh lại, KHÔNG có giới hạn do server thêm) -> check_plan
+    -> (run) connector.execute(SQL có giới hạn, max_rows) -> apply_masking.
+
+EXPLAIN tính trên câu không có FETCH FIRST/LIMIT do server thêm, vì first-rows costing
+của câu có giới hạn che mất full scan; giới hạn của chính người dùng vẫn được giữ.
+Câu chạy thật có giới hạn max_rows + 1 và connector chỉ lấy max_rows dòng, nên
+`truncated` chính xác: chỉ True khi thực sự còn dòng chưa trả về.
 
 Nguyên tắc an toàn:
-- Xuống DB chỉ có SQL do `apply_row_limit` sinh lại từ cây đã parse, không bao
-  giờ là chuỗi gốc (comment, optimizer hint, comment thực thi MariaDB bị bỏ).
+- Xuống DB chỉ có SQL sinh lại từ cây đã parse (`ParsedQuery.sql` cho EXPLAIN,
+  `apply_row_limit` cho execute), không bao giờ là chuỗi gốc (comment, optimizer hint, comment thực thi MariaDB bị bỏ).
 - Không bao giờ chuyển nguyên văn lỗi của driver/ngoại lệ lạ ra ngoài hay vào
   audit: chỉ thông điệp cố định của các lớp lỗi trong `db.base` (được dựng lại
   từ mã lỗi đã kiểm tra) và lý do của cổng kiểm tra.
@@ -175,9 +181,9 @@ class QueryService:
             rows = apply_masking(rows, state.mask_plan, self._hmac_key)
             masked = [c for c, m in zip(result.columns, state.mask_plan) if m]
             notes.append(f"Cột nhạy cảm đã được băm/che: {', '.join(masked)}.")
-        truncated = result.truncated or len(rows) >= guard.max_rows
+        truncated = result.truncated
         if truncated:
-            notes.append(f"Kết quả bị giới hạn ở {guard.max_rows} dòng, có thể còn dòng chưa trả về; "
+            notes.append(f"Kết quả bị giới hạn ở {guard.max_rows} dòng, còn dòng chưa trả về; "
                          "nên dùng truy vấn tổng hợp (GROUP BY, COUNT) hoặc thu hẹp điều kiện.")
         return RunResult(columns=list(result.columns), rows=rows, row_count=len(rows),
                          truncated=truncated, elapsed_ms=0, notes=notes)
@@ -204,8 +210,8 @@ class QueryService:
         stats = {table: _estimated_rows(connector, table) for table in parsed.tables}
         large = large_tables(parsed, guard, stats)
         enforce_time_range(parsed, guard, large, self._today())
-        state.sql = apply_row_limit(parsed, guard.max_rows)
-        state.plan = connector.explain(state.sql)
+        state.sql = apply_row_limit(parsed, guard.max_rows + 1)
+        state.plan = connector.explain(parsed.sql)
         check_plan(state.plan, guard, large)
 
     # --- Hạ tầng -------------------------------------------------------------

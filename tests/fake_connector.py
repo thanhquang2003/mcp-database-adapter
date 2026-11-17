@@ -55,4 +55,8 @@ class FakeConnector:
             self.on_execute()
         if self.execute_error is not None:
             raise self.execute_error
-        return self.result
+        # Như fetch_limited của connector thật: lấy tối đa max_rows, còn dư thì truncated.
+        r = self.result
+        if len(r.rows) > max_rows:
+            return QueryResult(columns=list(r.columns), rows=list(r.rows[:max_rows]), truncated=True)
+        return r

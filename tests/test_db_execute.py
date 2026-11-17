@@ -119,6 +119,31 @@ def test_oracle_explain(monkeypatch, creds, make_profile):
     assert len(ex) == 1 and ex[0].endswith("FOR SELECT * FROM t")
     assert plan.cost == 9 and plan.full_scans == ["T"] and plan.text == "line1\nline2"
     assert ("commit",) not in conn.log and ("rollback",) in conn.log and conn.closed
+    # Dòng INDEX được quy về bảng gốc qua all_indexes (để so với danh sách bảng lớn).
+    plan_sql = next(s for s in st if "FROM plan_table" in s)
+    assert "all_indexes" in plan_sql
+
+
+def test_oracle_explain_text_has_rows_cost_but_no_predicates(monkeypatch, creds, make_profile):
+    conn = FakeConnection(script={"FROM plan_table": (["a"], []), "DBMS_XPLAN": (["x"], [])})
+    cls = setup(monkeypatch, "oracle", conn)
+    cls(make_profile("oracle")).explain("SELECT 1 FROM dual")
+    xplan = [e for e in conn.log if e[0] == "execute" and "DBMS_XPLAN" in e[1]]
+    assert len(xplan) == 1
+    sql = xplan[0][1].upper()
+    assert "'BASIC +ROWS +COST'" in sql
+    for bad in ("PREDICATE", "'ALL'", "TYPICAL", "ADVANCED"):
+        assert bad not in sql
+
+
+def test_oracle_execute_one_round_trip(monkeypatch, creds, make_profile):
+    conn = FakeConnection(script={"SELECT": (["A"], [(i,) for i in range(5)])})
+    cls = setup(monkeypatch, "oracle", conn)
+    cls(make_profile("oracle")).execute("SELECT x", 3, 5)
+    cur = conn.cursors[-1]
+    assert cur.arraysize == 4 and cur.prefetchrows == 4
+    # đặt trước khi chạy câu truy vấn
+    assert cur.set_before_execute == {"arraysize": 4, "prefetchrows": 4}
 
 
 def test_oracle_explain_error_sanitized(monkeypatch, creds, make_profile):
@@ -227,12 +252,15 @@ def test_mariadb_execute_uses_streaming_cursor(monkeypatch, creds, make_profile)
     assert (pymysql.cursors.SSCursor,) in conn.cursor_args
 
 
-def test_mariadb_truncated_closes_without_draining(monkeypatch, creds, make_profile):
-    conn = FakeConnection(script={"SELECT": (["A"], [(i,) for i in range(10)])})
+def test_mariadb_truncated_closes_normally(monkeypatch, creds, make_profile):
+    # Truncation chính xác: SQL có LIMIT max_rows+1 nên còn tối đa một dòng chưa đọc;
+    # đóng cursor/rollback/đóng kết nối bình thường, không còn mẹo bỏ dở kết quả.
+    conn = FakeConnection(script={"SELECT": (["A"], [(i,) for i in range(4)])})
     cls = setup(monkeypatch, "mariadb", conn)
     res = cls(make_profile("mariadb")).execute("SELECT 1", 3, 5)
     assert res.truncated and conn.closed
-    assert ("rollback",) not in conn.log and ("fetchall",) not in conn.log
+    assert ("rollback",) in conn.log and ("cursor_close",) in conn.log
+    assert conn.log.index(("cursor_close",)) < conn.log.index(("rollback",))
 
 
 @pytest.mark.parametrize("kind", ["oracle", "mariadb"])
@@ -265,3 +293,10 @@ def test_timeout_must_be_positive(monkeypatch, creds, make_profile, kind, secs):
     with pytest.raises(ValueError):
         cls(make_profile(kind)).execute("SELECT 1", 5, secs)
     assert conn.log == []
+
+
+def test_session_has_no_abandon_hack():
+    from mcp_database.db import base
+    assert not hasattr(base.Session, "abandon_result")
+    import inspect
+    assert "abandon_on_truncate" not in inspect.signature(base.run_query).parameters

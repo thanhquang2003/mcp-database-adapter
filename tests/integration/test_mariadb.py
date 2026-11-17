@@ -71,13 +71,30 @@ def test_timeout(conn):
 
 
 def test_large_result_truncates_fast(conn):
+    # Như pipeline: SQL có LIMIT max_rows + 1, connector lấy max_rows dòng; đóng bình thường.
     t0 = time.monotonic()
     r = conn.execute(
         "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < 500000) "
-        "SELECT i FROM n", 3, 20)
+        "SELECT i FROM n LIMIT 4", 3, 20)
     elapsed = time.monotonic() - t0
     print(f"large result: truncated={r.truncated} in {elapsed:.2f}s")
     assert r.truncated and len(r.rows) == 3 and elapsed < 10
+
+
+def test_large_result_through_service(conn, tmp_path):
+    from types import MappingProxyType
+    from mcp_database.config import Config
+    from mcp_database.service import QueryService
+    cfg = Config(audit_log=None, systems=MappingProxyType({"it": conn.profile}))
+    svc = QueryService(cfg, connector_factory=lambda p: conn)
+    t0 = time.monotonic()
+    r = svc.run("it", "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < 500000) "
+                      "SELECT i FROM n")
+    elapsed = time.monotonic() - t0
+    print(f"service large result: truncated={r.truncated} rows={r.row_count} in {elapsed:.2f}s")
+    assert r.truncated and r.row_count == conn.profile.guard.max_rows and elapsed < 10
+    exact = svc.run("it", "SELECT seq FROM seq_1_to_1000")
+    assert exact.row_count == 1000 and exact.truncated is False
 
 
 def test_insert_rejected(conn, writer):

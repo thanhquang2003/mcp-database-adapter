@@ -173,17 +173,23 @@ def normalize_cell(value: object) -> object:
     return value
 
 
-def close_quietly(conn, rollback: bool = True) -> None:
-    """Rollback (không bao giờ commit) rồi đóng; lỗi lúc dọn dẹp không che lỗi gốc.
+def close_quietly(conn, cursor=None) -> None:
+    """Đóng cursor, rollback (không bao giờ commit) rồi đóng kết nối; lỗi lúc dọn dẹp
+    không che lỗi gốc.
 
-    rollback=False khi còn kết quả streaming chưa đọc hết: đóng thẳng kết nối (server tự
-    rollback) để driver không phải đọc nốt toàn bộ tập kết quả.
+    Pipeline luôn chạy SQL có giới hạn max_rows + 1 dòng và đọc tối đa ngần ấy dòng, nên
+    cursor streaming (MariaDB SSCursor) chỉ còn tối đa phần kết thúc của tập kết quả để
+    đọc nốt khi đóng.
     """
-    if rollback:
+    if cursor is not None:
         try:
-            conn.rollback()
+            cursor.close()
         except Exception:
             pass
+    try:
+        conn.rollback()
+    except Exception:
+        pass
     try:
         conn.close()
     except Exception:
@@ -194,13 +200,13 @@ def close_quietly(conn, rollback: bool = True) -> None:
 class Session:
     conn: Any
     cursor: Any
-    abandon_result: bool = False
 
 
 @contextmanager
 def session(connect: Callable[[], Any], setup: Callable[[Any], Any],
             timeout_codes: frozenset, timeout_seconds: int) -> Iterator[Session]:
-    """connect -> setup (trả cursor) -> yield -> rollback -> close, kể cả khi setup lỗi."""
+    """connect -> setup (trả cursor) -> yield -> đóng cursor -> rollback -> close,
+    kể cả khi setup lỗi."""
     if timeout_seconds <= 0:
         raise ValueError("timeout_seconds phải > 0")
     conn = None
@@ -212,18 +218,7 @@ def session(connect: Callable[[], Any], setup: Callable[[Any], Any],
             yield sess
     finally:
         if conn is not None:
-            abandon = bool(sess and sess.abandon_result)
-            close_quietly(conn, rollback=not abandon)
-            if abandon:
-                # Tách cursor khỏi kết nối đã đóng để __del__ của cursor không cố đọc nốt kết quả.
-                # (PyMySQL: MySQLResult.__del__ cũng đọc nốt nếu unbuffered_active còn bật.)
-                try:
-                    sess.cursor.connection = None
-                    result = getattr(sess.cursor, "_result", None)
-                    if result is not None:
-                        result.unbuffered_active = False
-                except Exception:
-                    pass
+            close_quietly(conn, sess.cursor if sess is not None else None)
 
 
 def fetch_limited(cursor, max_rows: int) -> QueryResult:
@@ -234,11 +229,8 @@ def fetch_limited(cursor, max_rows: int) -> QueryResult:
     return QueryResult(columns, [tuple(normalize_cell(c) for c in r) for r in rows], truncated)
 
 
-def run_query(sess: Session, sql: str, max_rows: int, abandon_on_truncate: bool = False) -> QueryResult:
+def run_query(sess: Session, sql: str, max_rows: int) -> QueryResult:
     sess.cursor.execute(sql)
     if sess.cursor.description is None:
         raise QueryRejected()
-    result = fetch_limited(sess.cursor, max_rows)
-    if result.truncated and abandon_on_truncate:
-        sess.abandon_result = True
-    return result
+    return fetch_limited(sess.cursor, max_rows)

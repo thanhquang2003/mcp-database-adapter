@@ -17,8 +17,15 @@ TIMEOUT_CODES = frozenset({1969})
 
 
 def summarize_mariadb_explain(rows: list[dict]) -> PlanSummary:
+    """Ước lượng số dòng từ EXPLAIN.
+
+    Trong cùng một `id` (một SELECT), các bảng được join lồng nhau nên số dòng ước lượng
+    là tích `rows`. Giữa các `id` khác nhau (subquery, nhánh UNION, bảng dẫn xuất) lấy
+    MAX chứ không nhân/cộng: nhân chéo các SELECT độc lập làm phình số liệu và từ chối
+    oan các UNION; MAX vẫn bắt được SELECT tốn kém nhất.
+    """
     full: list[str] = []
-    est: int | None = None
+    per_id: dict[object, int] = {}
     for r in rows:
         if r.get("type") == "ALL" and r.get("table"):
             name = norm(str(r["table"]))
@@ -26,9 +33,12 @@ def summarize_mariadb_explain(rows: list[dict]) -> PlanSummary:
                 full.append(name)
         n = r.get("rows")
         if n is not None:
-            est = int(n) if est is None else est * int(n)
+            key = r.get("id")
+            per_id[key] = int(n) if key not in per_id else per_id[key] * int(n)
+    est = max(per_id.values()) if per_id else None
     text = "\n".join(
-        f"{r.get('table')}: type={r.get('type')} rows={r.get('rows')}" for r in rows)
+        f"id={r.get('id')} {r.get('select_type') or ''} {r.get('table')}: "
+        f"type={r.get('type')} rows={r.get('rows')}".replace("  ", " ") for r in rows)
     return PlanSummary(cost=None, est_rows=est, full_scans=full, text=text)
 
 
@@ -55,7 +65,7 @@ class MariaDBConnector:
 
     def execute(self, sql: str, max_rows: int, timeout_seconds: int) -> QueryResult:
         with self._session(timeout_seconds, streaming=True) as s:
-            return run_query(s, sql, max_rows, abandon_on_truncate=True)
+            return run_query(s, sql, max_rows)
 
     def explain(self, sql: str) -> PlanSummary:
         with self._session(self.profile.guard.timeout_seconds) as s:

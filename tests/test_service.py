@@ -94,7 +94,7 @@ def test_happy_path_applies_limit_and_masks(build, audit_path):
     result = svc.run("cdr", HAPPY)
     assert isinstance(result, RunResult)
     assert len(fake.executed_sql) == 1
-    assert "FETCH FIRST 1000 ROWS ONLY" in fake.executed_sql[0]
+    assert "FETCH FIRST 1001 ROWS ONLY" in fake.executed_sql[0]
     assert result.rows == apply_masking(ROWS, ["hash", None], KEY)
     assert all(r[0] != orig[0] and len(r[0]) == 16 for r, orig in zip(result.rows, ROWS))
     assert [r[1] for r in result.rows] == [3, 5]
@@ -135,11 +135,22 @@ def test_rejected_never_reaches_execute(build, audit_path, fake, sql, plan):
     assert ev["row_count"] is None
 
 
-def test_explain_runs_on_final_sql(build, fake):
+def test_explain_runs_on_sql_without_server_limit(build, fake):
+    # EXPLAIN phải tính chi phí câu không có giới hạn do server thêm (first-rows costing
+    # của FETCH FIRST che full scan), còn câu thực thi thì có giới hạn max_rows + 1.
     svc, _ = build()
     svc.run("cdr", SAFE)
-    assert "FETCH FIRST 1000 ROWS ONLY" in fake.explained_sql[0]
-    assert fake.explained_sql == fake.executed_sql
+    parsed = parse_select(SAFE, "oracle")
+    assert fake.explained_sql == [parsed.sql]
+    assert "FETCH" not in fake.explained_sql[0].upper()
+    assert fake.executed_sql == [apply_row_limit(parsed, 1001)]
+
+
+def test_explain_keeps_user_limit(build, fake):
+    svc, _ = build()
+    svc.run("cdr", SAFE + " FETCH FIRST 7 ROWS ONLY")
+    assert "FETCH FIRST 7 ROWS ONLY" in fake.explained_sql[0]
+    assert "FETCH FIRST 7 ROWS ONLY" in fake.executed_sql[0]
 
 
 def test_check_does_not_execute(build, fake):
@@ -150,7 +161,7 @@ def test_check_does_not_execute(build, fake):
     assert res.reasons == [] and res.hints == []
     assert len(fake.explained_sql) == 1
     assert fake.executed_sql == []
-    assert res.sql == fake.explained_sql[0]
+    assert res.sql == apply_row_limit(parse_select(SAFE, "oracle"), 1001)
     assert res.plan == fake.plan
     assert res.mask_plan == []
 
@@ -288,7 +299,7 @@ def test_check_plan_rejection_keeps_sql_and_plan(build, fake):
     res = svc.check("cdr", SAFE)
     assert res.allowed is False
     assert res.plan is fake.plan
-    assert res.sql == fake.explained_sql[0]
+    assert res.sql == apply_row_limit(parse_select(SAFE, "oracle"), 1001)
 
 
 ORACLE_TRICKS = (
@@ -300,9 +311,9 @@ ORACLE_TRICKS = (
 def test_only_regenerated_sql_reaches_connector(build, fake):
     svc, _ = build()
     svc.run("cdr", ORACLE_TRICKS)
-    expected = apply_row_limit(parse_select(ORACLE_TRICKS, "oracle"), 1000)
-    assert fake.explained_sql == [expected]
-    assert fake.executed_sql == [expected]
+    parsed = parse_select(ORACLE_TRICKS, "oracle")
+    assert fake.explained_sql == [parsed.sql]
+    assert fake.executed_sql == [apply_row_limit(parsed, 1001)]
     for sql in fake.explained_sql + fake.executed_sql:
         assert sql != ORACLE_TRICKS
         assert "/*" not in sql and "--" not in sql and "FULL(" not in sql
@@ -320,7 +331,8 @@ def test_mariadb_executable_comment_never_reaches_connector(build, tmp_path, fak
 def test_mariadb_limit_added(build, tmp_path, fake):
     svc, _ = build(profiles=[make_profile(tmp_path, name="m", db_type="mariadb")])
     svc.run("m", "SELECT id FROM users -- x")
-    assert fake.executed_sql == ["SELECT id FROM users LIMIT 1000"]
+    assert fake.executed_sql == ["SELECT id FROM users LIMIT 1001"]
+    assert fake.explained_sql == ["SELECT id FROM users"]
 
 
 def test_sql_length_cap_before_parse(build, fake, audit_path, monkeypatch):
@@ -402,7 +414,7 @@ def test_guard_values_passed_to_execute(build, fake):
     svc, _ = build(max_rows=50, timeout_seconds=7)
     svc.run("cdr", SAFE)
     sql, max_rows, timeout = fake.execute_args[0]
-    assert "FETCH FIRST 50 ROWS ONLY" in sql
+    assert "FETCH FIRST 51 ROWS ONLY" in sql
     assert (max_rows, timeout) == (50, 7)
 
 
@@ -438,12 +450,37 @@ def test_stats_failure_treated_as_unknown(build, fake, error):
     assert len(fake.executed_sql) == 1
 
 
-def test_truncated_note(build, fake):
+def test_truncated_only_from_connector(build, fake):
+    # Đúng max_rows dòng nhưng connector báo không còn dòng nào -> không bị cắt.
     fake.result = QueryResult(columns=["STATUS"], rows=[(i,) for i in range(3)], truncated=False)
     svc, _ = build(max_rows=3)
     res = svc.run("cdr", SAFE)
-    assert res.truncated is True
+    assert res.truncated is False and res.row_count == 3
+    assert not any("giới hạn" in n for n in res.notes)
+
+
+def test_truncated_note(build, fake):
+    fake.result = QueryResult(columns=["STATUS"], rows=[(i,) for i in range(4)], truncated=False)
+    svc, _ = build(max_rows=3)
+    res = svc.run("cdr", SAFE)
+    assert res.truncated is True and res.row_count == 3
     assert any("3" in n for n in res.notes)
+
+
+def test_user_fetch_first_equal_to_max_rows_not_truncated(build, fake):
+    fake.result = QueryResult(columns=["STATUS"], rows=[(i,) for i in range(3)], truncated=False)
+    svc, _ = build(max_rows=3)
+    res = svc.run("cdr", SAFE + " FETCH FIRST 3 ROWS ONLY")
+    assert "FETCH FIRST 3 ROWS ONLY" in fake.executed_sql[0]
+    assert res.truncated is False
+
+
+def test_user_limit_above_max_rows_truncated(build, tmp_path, fake):
+    fake.result = QueryResult(columns=["ID"], rows=[(i,) for i in range(4)], truncated=False)
+    svc, _ = build(profiles=[make_profile(tmp_path, name="m", db_type="mariadb", max_rows=3)])
+    res = svc.run("m", "SELECT id FROM users LIMIT 5000")
+    assert fake.executed_sql == ["SELECT id FROM users LIMIT 4"]
+    assert res.truncated is True and res.row_count == 3
 
 
 def test_masking_note(build):

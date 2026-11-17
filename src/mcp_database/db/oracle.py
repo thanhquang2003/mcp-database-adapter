@@ -24,15 +24,31 @@ NLS_SQL = ("ALTER SESSION SET NLS_DATE_FORMAT = 'YYYY-MM-DD HH24:MI:SS' "
            "NLS_TIMESTAMP_TZ_FORMAT = 'YYYY-MM-DD HH24:MI:SS.FF TZH:TZR'")
 
 
+def _is_full_scan(op: str, options: str) -> bool:
+    op, options = op.upper(), options.upper()
+    if op.startswith(("TABLE ACCESS", "MAT_VIEW ACCESS")):
+        return "FULL" in options
+    if op == "INDEX":
+        # Đọc toàn bộ index; "FULL SCAN (MIN/MAX)" chỉ đọc một đầu index nên bỏ qua.
+        return options in ("FAST FULL SCAN", "FULL SCAN")
+    return False
+
+
 def summarize_oracle_plan(rows: list[tuple]) -> PlanSummary:
-    """rows: (operation, options, object_name, cost, cardinality) theo thứ tự id."""
-    cost = est = None
-    if rows:
-        cost = int(rows[0][3]) if rows[0][3] is not None else None
-        est = int(rows[0][4]) if rows[0][4] is not None else None
+    """rows: (operation, options, object_name, cost, cardinality) theo thứ tự id.
+
+    cost = cost của dòng gốc (đã cộng dồn). est_rows = cardinality LỚN NHẤT trong mọi
+    dòng: gốc của một COUNT(*) chỉ có 1 dòng dù bên dưới đọc hàng chục triệu dòng.
+    Với dòng INDEX, object_name phải là tên bảng của index (explain() quy đổi sẵn).
+    """
+    cost = None
+    if rows and rows[0][3] is not None:
+        cost = int(rows[0][3])
+    cards = [int(r[4]) for r in rows if r[4] is not None]
+    est = max(cards) if cards else None
     full: list[str] = []
     for op, options, obj, _c, _k in rows:
-        if (op or "").upper().startswith("TABLE ACCESS") and "FULL" in (options or "").upper() and obj:
+        if obj and _is_full_scan(op or "", options or ""):
             name = norm(obj)
             if name not in full:
                 full.append(name)
@@ -61,6 +77,10 @@ class OracleConnector:
 
     def execute(self, sql: str, max_rows: int, timeout_seconds: int) -> QueryResult:
         with self._session(timeout_seconds) as s:
+            # fetchmany(max_rows + 1) trong một lượt round trip (call_timeout tính theo
+            # từng round trip); prefetchrows phải đặt trước khi execute.
+            s.cursor.arraysize = max_rows + 1
+            s.cursor.prefetchrows = max_rows + 1
             return run_query(s, sql, max_rows)
 
     def explain(self, sql: str) -> PlanSummary:
@@ -70,11 +90,19 @@ class OracleConnector:
         with self._session(self.profile.guard.timeout_seconds, read_only=False) as s:
             cur = s.cursor
             cur.execute(f"EXPLAIN PLAN SET STATEMENT_ID = '{sid}' FOR {sql}")
-            cur.execute("SELECT operation, options, object_name, cost, cardinality "
-                        "FROM plan_table WHERE statement_id = :id ORDER BY id", {"id": sid})
+            # Dòng INDEX ... FULL SCAN mang tên index: quy về tên bảng qua all_indexes để
+            # so được với danh sách bảng lớn.
+            cur.execute("SELECT p.operation, p.options, NVL(i.table_name, p.object_name), "
+                        "p.cost, p.cardinality "
+                        "FROM plan_table p LEFT JOIN all_indexes i "
+                        "ON p.object_type LIKE 'INDEX%' AND i.owner = p.object_owner "
+                        "AND i.index_name = p.object_name "
+                        "WHERE p.statement_id = :id ORDER BY p.id", {"id": sid})
             plan = summarize_oracle_plan(cur.fetchall())
+            # BASIC +ROWS +COST: có số dòng/chi phí nhưng KHÔNG có phần Predicate
+            # Information (chứa literal trong WHERE, có thể là giá trị nhạy cảm).
             cur.execute("SELECT plan_table_output FROM TABLE("
-                        "DBMS_XPLAN.DISPLAY('PLAN_TABLE', :id, 'BASIC'))", {"id": sid})
+                        "DBMS_XPLAN.DISPLAY('PLAN_TABLE', :id, 'BASIC +ROWS +COST'))", {"id": sid})
             text = "\n".join(str(r[0]) for r in cur.fetchall())
             return replace(plan, text=text)
 
