@@ -1,0 +1,45 @@
+# Mẫu cấu hình. Sao chép thành systems.yaml (file này bị git bỏ qua) rồi sửa.
+# Không ghi mật khẩu vào đây: chỉ ghi TÊN biến môi trường, giá trị đặt ở môi trường chạy.
+
+# Đường dẫn file audit log (JSONL), tính từ thư mục chứa file này. Bỏ trống = không ghi.
+audit_log: audit.jsonl
+
+systems:
+  billing:                       # Tên hệ thống, dùng để chọn khi gọi tool
+    db_type: oracle              # oracle | mariadb
+    host: billing-replica.example.local
+    port: 1521
+    database: BILLPDB            # Oracle: service name
+    user_env: BILLING_DB_USER    # Tên biến môi trường chứa user
+    password_env: BILLING_DB_PASS  # Tên biến môi trường chứa mật khẩu
+    data_doc: docs/billing.md    # Tài liệu mô tả dữ liệu, tính từ thư mục chứa file này
+    is_replica: true             # Bắt buộc true (kết nối replica) hoặc đặt allow_primary: true
+    # allow_primary: true        # Chỉ dùng khi chủ ý đọc từ primary, có xác nhận của DBA
+    guard:
+      max_rows: 1000             # Số dòng tối đa trả về (mặc định 1000)
+      timeout_seconds: 30        # Timeout mỗi truy vấn (mặc định 30)
+      max_concurrent: 2          # Số truy vấn đồng thời tối đa (mặc định 2)
+      large_table_rows: 5000000  # Bảng lớn hơn ngưỡng này bắt buộc lọc theo cột thời gian
+      max_explain_cost: 100000   # Chặn nếu cost trong EXPLAIN vượt ngưỡng
+      max_explain_rows: 5000000  # Chặn nếu số dòng ước lượng vượt ngưỡng
+      tables:                    # Bảng lớn: cột thời gian bắt buộc và khoảng tối đa
+        cdr_history:
+          time_column: call_time
+          max_range_days: 7
+      sensitive_columns:         # TABLE.COLUMN: hash (băm) | redact (che hoàn toàn)
+        cdr_history.msisdn: hash
+        cdr_history.imsi: redact
+
+  crm:
+    db_type: mariadb
+    host: crm-replica.example.local
+    port: 3306
+    database: crm                # MariaDB: tên database
+    user_env: CRM_DB_USER
+    password_env: CRM_DB_PASS
+    data_doc: docs/crm.md
+    is_replica: true
+    guard:
+      max_rows: 500
+      sensitive_columns:
+        customers.email: redact

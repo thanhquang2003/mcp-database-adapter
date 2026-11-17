@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mcp-database"
+version = "0.1.0"
+description = "MCP server chỉ-đọc cho Oracle/MariaDB (replica) dùng chung cho Claude"
+requires-python = ">=3.11"
+dependencies = [
+  "mcp>=2.3.0",
+  "sqlglot>=30.32.0",
+  "PyYAML>=6.0.3",
+  "oracledb>=26.1.0",
+  "PyMySQL>=1.2.4",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=9.2.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
