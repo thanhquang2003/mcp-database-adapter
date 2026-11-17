@@ -322,3 +322,44 @@ def test_plain_functions_allowed(db_type):
 def test_unknown_db_type():
     with pytest.raises(ValueError):
         parse_select("SELECT 1 FROM t", "postgres")
+
+
+XPATH_QUERIES = [
+    """SELECT COLUMN_VALUE FROM XMLTABLE('fn:collection("oradb:/APP/CDR")')""",
+    """SELECT x.column_value FROM XMLTABLE('ora:view("CDR")') x""",
+    """SELECT x.* FROM XMLTABLE('fn:collection("oradb:/APP/CDR")') x""",
+    "SELECT XMLQUERY('ora:view(\"CDR\")') FROM dual",
+    "SELECT 1 FROM t WHERE XMLEXISTS('/a')",
+    "SELECT XMLCAST(a) FROM t",
+    "SELECT * FROM TABLE(XMLSEQUENCE(a))",
+    "SELECT EXTRACTVALUE(a, '/x') FROM t",
+    "SELECT UPDATEXML(a, '/x', 'y') FROM t",
+    "SELECT EXISTSNODE(a, '/x') FROM t",
+    "SELECT EXTRACT(a, '/x') FROM t",
+    "SELECT DBURITYPE('/APP/CDR/ROW/MSISDN') FROM dual",
+    "SELECT HTTPURITYPE('http://x') FROM dual",
+    "SELECT XMLTRANSFORM(a, b) FROM t",
+]
+
+
+@pytest.mark.parametrize("sql", XPATH_QUERIES)
+def test_xquery_xpath_entry_points_rejected(sql, db_type):
+    err = rejection(sql, db_type)
+    assert "XML" in err.reason or "XPath" in err.reason
+    assert err.hint
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT EXTRACT(YEAR FROM d) FROM t",
+        "SELECT EXTRACT(MONTH FROM d), EXTRACT(DAY FROM d) FROM t",
+    ],
+)
+def test_extract_datetime_allowed(sql, db_type):
+    assert parse_select(sql, db_type).tables == ("T",)
+
+
+def test_mariadb_error_based_extractvalue_rejected():
+    err = rejection("SELECT 1 FROM t WHERE EXTRACTVALUE(1, CONCAT(0x7e, (SELECT msisdn FROM cdr LIMIT 1))) = 1", "mariadb")
+    assert "EXTRACTVALUE" in err.reason and err.hint

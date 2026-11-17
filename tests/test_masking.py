@@ -185,3 +185,103 @@ def test_apply_masking_known_hmac():
 
     expected = hmac.new(b"k", b"84912", hashlib.sha256).hexdigest()[:16]
     assert apply_masking([("84912",)], ["hash"], b"k") == [(expected,)]
+
+
+# --- Round 1 review fixes -----------------------------------------------------
+
+XQUERY_BYPASS = [
+    """SELECT COLUMN_VALUE FROM XMLTABLE('fn:collection("oradb:/APP/CDR")')""",
+    """SELECT x.column_value FROM XMLTABLE('ora:view("CDR")') x""",
+    """SELECT x.* FROM XMLTABLE('fn:collection("oradb:/APP/CDR")') x""",
+]
+
+
+@pytest.mark.parametrize("sql", XQUERY_BYPASS)
+def test_xquery_rejected_by_parser(sql):
+    with pytest.raises(QueryRejected):
+        P(sql)
+
+
+def _unguarded(sql, dialect="mcporacle"):
+    """ParsedQuery dựng thẳng từ sqlglot, bỏ qua parse_select, để thử lớp phòng thủ thứ hai."""
+    import sqlglot
+
+    from mcp_database.guard.parser import ParsedQuery, _real_tables
+
+    tree = sqlglot.parse_one(sql, read=dialect)
+    return ParsedQuery(expression=tree, dialect=dialect, sql=sql, tables=_real_tables(tree))
+
+
+@pytest.mark.parametrize("sql", XQUERY_BYPASS)
+def test_xquery_rejected_by_masking_even_without_parser(sql):
+    with pytest.raises(QueryRejected) as info:
+        plan_masking(_unguarded(sql), S)
+    assert info.value.hint
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT a FROM TABLE(f(x))",
+        "SELECT j.a FROM JSON_TABLE(x, '$' COLUMNS (a NUMBER PATH '$.a')) j",
+        "SELECT o.id FROM other o JOIN TABLE(f(o.x)) t ON 1 = 1",
+    ],
+)
+def test_table_function_sources_rejected_when_sensitive_configured(sql):
+    with pytest.raises(QueryRejected):
+        plan_masking(P(sql), S)
+    assert plan_masking(P(sql), {}) == []
+
+
+def test_lateral_subquery_is_a_plain_source():
+    assert plan_masking(P("SELECT o.id FROM other o CROSS APPLY (SELECT 1 AS k FROM dual) z"), S) == []
+
+
+ROW_GENERATORS_ON_SENSITIVE = [
+    ("SELECT n.v FROM (SELECT LEVEL + 84900000000 v FROM dual CONNECT BY LEVEL <= 1000000) n "
+     "JOIN cdr c ON c.msisdn = TO_CHAR(n.v)", "oracle"),
+    ("SELECT status FROM cdr START WITH id = 1 CONNECT BY PRIOR id = parent_id", "oracle"),
+    ("WITH RECURSIVE r AS (SELECT 1 AS v FROM dual UNION ALL SELECT v + 1 FROM r WHERE v < 9) "
+     "SELECT r.v FROM r JOIN cdr c ON c.msisdn = r.v", "oracle"),
+    ("WITH RECURSIVE r AS (SELECT 1 AS v UNION ALL SELECT v + 1 FROM r WHERE v < 9) "
+     "SELECT r.v FROM r JOIN cdr c ON c.msisdn = r.v", "mariadb"),
+    ("WITH r (v) AS (SELECT 1 FROM dual UNION ALL SELECT v + 1 FROM r WHERE v < 9) "
+     "SELECT r.v FROM r JOIN cdr c ON c.msisdn = r.v", "oracle"),
+    ("SELECT s.seq FROM seq_84900000000_to_84999999999 s JOIN cdr c ON c.msisdn = s.seq", "mariadb"),
+    ("SELECT s.seq FROM seq_1_to_100_step_2 s JOIN cdr c ON c.msisdn = s.seq", "mariadb"),
+]
+
+
+@pytest.mark.parametrize("sql, db", ROW_GENERATORS_ON_SENSITIVE)
+def test_row_generators_rejected_with_sensitive_table(sql, db):
+    with pytest.raises(QueryRejected) as info:
+        plan_masking(parse_select(sql, db), S)
+    assert info.value.hint
+
+
+@pytest.mark.parametrize(
+    "sql, db",
+    [
+        ("SELECT LEVEL FROM dual CONNECT BY LEVEL <= 10", "oracle"),
+        ("SELECT id FROM other START WITH id = 1 CONNECT BY PRIOR id = parent_id", "oracle"),
+        ("WITH RECURSIVE r AS (SELECT 1 AS v UNION ALL SELECT v + 1 FROM r WHERE v < 9) SELECT v FROM r", "mariadb"),
+        ("WITH r (v) AS (SELECT 1 FROM dual UNION ALL SELECT v + 1 FROM r WHERE v < 9) SELECT v FROM r", "oracle"),
+        ("SELECT seq FROM seq_1_to_10", "mariadb"),
+    ],
+)
+def test_row_generators_allowed_without_sensitive_table(sql, db):
+    assert plan_masking(parse_select(sql, db), S) == []
+
+
+def test_keep_dense_rank_order_is_allowed():
+    assert plan_masking(P("SELECT MAX(id) KEEP (DENSE_RANK FIRST ORDER BY msisdn) FROM cdr"), S) == []
+
+
+def test_numeric_values_hash_identically():
+    from decimal import Decimal
+
+    expected = apply_masking([("84912",)], ["hash"], b"k")[0][0]
+    for v in (84912, 84912.0, Decimal("84912"), Decimal("84912.00")):
+        assert apply_masking([(v,)], ["hash"], b"k")[0][0] == expected, v
+    assert apply_masking([(Decimal("1.5"),)], ["hash"], b"k") == apply_masking([("1.5",)], ["hash"], b"k")
+    assert apply_masking([(True,)], ["hash"], b"k") == apply_masking([("True",)], ["hash"], b"k")

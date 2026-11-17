@@ -84,6 +84,70 @@ BLOCKED_FUNCTIONS = frozenset(
 )
 BLOCKED_PREFIXES = ("DBMS_", "UTL_")
 
+# Hàm XQuery/XPath/URI nhận một chuỗi làm đường dẫn: chuỗi đó có thể chỉ tới bảng
+# bất kỳ (fn:collection("oradb:/APP/CDR"), ora:view("CDR"), DBURITYPE('/APP/CDR'))
+# nên vượt qua mọi kiểm tra theo tên bảng; EXTRACTVALUE/UPDATEXML còn là kênh
+# rò dữ liệu qua thông báo lỗi của MariaDB.
+XPATH_FUNCTIONS = frozenset(
+    {
+        "XMLTABLE",
+        "XMLQUERY",
+        "XMLEXISTS",
+        "XMLCAST",
+        "XMLSEQUENCE",
+        "XMLTRANSFORM",
+        "XMLPATCH",
+        "XMLDIFF",
+        "XMLGET",
+        "EXTRACTVALUE",
+        "EXISTSNODE",
+        "UPDATEXML",
+        "DELETEXML",
+        "APPENDCHILDXML",
+        "INSERTCHILDXML",
+        "INSERTCHILDXMLAFTER",
+        "INSERTCHILDXMLBEFORE",
+        "INSERTXMLAFTER",
+        "INSERTXMLBEFORE",
+        "DBURITYPE",
+        "XDBURITYPE",
+        "HTTPURITYPE",
+        "URIFACTORY",
+    }
+)
+HINT_XPATH = "Truy vấn trực tiếp bảng/cột bằng SELECT thông thường, không dùng hàm XML/XPath/URI."
+
+# Đơn vị hợp lệ của EXTRACT(<đơn vị> FROM ngày). Dạng còn lại của Oracle,
+# EXTRACT(xml, 'xpath'), là hàm XPath và bị chặn.
+DATETIME_UNITS = frozenset(
+    {
+        "YEAR",
+        "QUARTER",
+        "MONTH",
+        "WEEK",
+        "DAY",
+        "HOUR",
+        "MINUTE",
+        "SECOND",
+        "MICROSECOND",
+        "TIMEZONE_HOUR",
+        "TIMEZONE_MINUTE",
+        "TIMEZONE_REGION",
+        "TIMEZONE_ABBR",
+        "YEAR_MONTH",
+        "DAY_HOUR",
+        "DAY_MINUTE",
+        "DAY_SECOND",
+        "DAY_MICROSECOND",
+        "HOUR_MINUTE",
+        "HOUR_SECOND",
+        "HOUR_MICROSECOND",
+        "MINUTE_SECOND",
+        "MINUTE_MICROSECOND",
+        "SECOND_MICROSECOND",
+    }
+)
+
 
 class QueryRejected(Exception):
     def __init__(self, reason: str, hint: str | None = None):
@@ -186,8 +250,16 @@ def _check_tree(root: exp.Expression) -> None:
     for node in root.walk():
         if isinstance(node, FORBIDDEN_NODES):
             raise QueryRejected(f"Câu SQL chứa thành phần bị cấm: {_kind(node)}.", HINT_SELECT_ONLY)
+        if isinstance(node, (exp.XMLTable, exp.XMLGet)):
+            raise QueryRejected(f"Không cho dùng hàm XML/XPath {_kind(node)}.", HINT_XPATH)
+        if isinstance(node, exp.Extract) and not (
+            isinstance(node.this, exp.Var) and node.this.name.upper() in DATETIME_UNITS
+        ):
+            raise QueryRejected("Không cho dùng EXTRACT dạng XML/XPath.", HINT_XPATH)
         if isinstance(node, exp.Func):
             name = _func_name(node)
+            if name in XPATH_FUNCTIONS:
+                raise QueryRejected(f"Không cho dùng hàm XML/XPath/URI {name}.", HINT_XPATH)
             if name in BLOCKED_FUNCTIONS or name.startswith(BLOCKED_PREFIXES):
                 raise QueryRejected(f"Hàm {name} bị chặn vì có tác dụng phụ.", HINT_FUNCTION)
             if "@" in name:

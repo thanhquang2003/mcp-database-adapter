@@ -4,13 +4,19 @@
 SELECT ngoài cùng (để biết chắc vị trí mà che). Cột nhạy cảm được dùng tự do
 để lọc/ghép/nhóm/sắp xếp. Mọi trường hợp khác (biểu thức, hàm, subquery, CTE,
 UNION, `*`) đều bị từ chối: không xác định được thì không cho chạy.
+
+Giả định: cột nhạy cảm trong WHERE vẫn có thể lộ qua thông báo lỗi của DB (vd.
+lỗi ép kiểu in ra giá trị). Lớp chạy query không bao giờ chuyển nguyên văn lỗi
+DB cho Claude; module này không tự chặn được kênh đó.
 """
 
 from __future__ import annotations
 
 import hashlib
 import hmac
+import re
 from collections.abc import Mapping
+from decimal import Decimal
 
 from sqlglot import exp
 
@@ -26,10 +32,23 @@ HINT_BARE = (
     "Chỉ lấy cột nhạy cảm trực tiếp ở SELECT ngoài cùng (có thể đặt alias), hệ thống sẽ tự băm/che; "
     "muốn đếm hoặc lọc theo cột này thì đặt nó ở WHERE/GROUP BY/ORDER BY."
 )
+HINT_SOURCE = "Chỉ đọc từ bảng thật hoặc subquery; không dùng hàm sinh bảng (TABLE(), XMLTABLE, JSON_TABLE...)."
+HINT_GENERATOR = (
+    "Không dùng CONNECT BY, CTE đệ quy hay bảng seq_N_to_M cùng với bảng có cột nhạy cảm; "
+    "hãy lọc/đếm trực tiếp trên bảng đó."
+)
+# Bảng ảo của SEQUENCE engine trong MariaDB.
+SEQ_TABLE = re.compile(r"SEQ_\d+_TO_\d+(_STEP_\d+)?")
 HINT_STAR = "Liệt kê rõ tên cột cần lấy thay cho *; cột nhạy cảm sẽ được băm/che tự động."
 
 
 def plan_masking(parsed: ParsedQuery, sensitive: Mapping[str, str]) -> list[str | None]:
+    root = parsed.expression
+    if sensitive:
+        # Phải chạy trước khi xét parsed.tables: hàm sinh bảng có thể đọc bảng
+        # nhạy cảm mà tên bảng chỉ nằm trong chuỗi (XQuery), nên tables không thấy.
+        _reject_table_functions(root)
+
     tables = set(parsed.tables)
     # cột -> {bảng: chế độ}, chỉ giữ bảng thật sự có trong query
     by_column: dict[str, dict[str, str]] = {}
@@ -40,7 +59,7 @@ def plan_masking(parsed: ParsedQuery, sensitive: Mapping[str, str]) -> list[str 
     if not by_column:
         return []
 
-    root = parsed.expression
+    _reject_row_generators(root, tables)
     _reject_stars(root, by_column)
 
     outer = root
@@ -71,6 +90,8 @@ def plan_masking(parsed: ParsedQuery, sensitive: Mapping[str, str]) -> list[str 
 
 
 def apply_masking(rows: list[tuple], plan: list[str | None], hmac_key: bytes) -> list[tuple]:
+    """Băm/che kết quả theo plan. `hmac_key` không bao giờ được ghi log hay trả về
+    cho Claude: lộ khóa thì dò ngược được số điện thoại từ giá trị băm."""
     if not plan:
         return rows
     return [tuple(_mask(v, m, hmac_key) for v, m in zip(row, plan, strict=True)) for row in rows]
@@ -80,16 +101,68 @@ def _mask(value, mode: str | None, key: bytes):
     if value is None or mode is None:
         return value
     if mode == "hash":
-        return hmac.new(key, str(value).encode(), hashlib.sha256).hexdigest()[:16]
+        return hmac.new(key, _canonical(value).encode(), hashlib.sha256).hexdigest()[:16]
     return REDACTED
 
 
+def _canonical(value) -> str:
+    """84912, 84912.0 và Decimal('84912') phải ra cùng một giá trị băm."""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    if isinstance(value, Decimal) and value.is_finite() and value == value.to_integral_value():
+        return str(int(value))
+    return str(value)
+
+
+def _reject_table_functions(root: exp.Expression) -> None:
+    for node in root.find_all(exp.From, exp.Join):
+        source = node.this
+        if isinstance(source, exp.Lateral):  # CROSS/OUTER APPLY (subquery)
+            source = source.this
+        if isinstance(source, exp.Subquery):
+            continue
+        if isinstance(source, exp.Table) and isinstance(source.this, exp.Identifier):
+            continue
+        raise QueryRejected(
+            f"Không cho đọc dữ liệu từ nguồn không phải bảng: {source.sql(comments=False)[:80]}.",
+            HINT_SOURCE,
+        )
+    for lateral in root.find_all(exp.Lateral):
+        if not isinstance(lateral.this, exp.Subquery):
+            raise QueryRejected("Không cho dùng LATERAL với hàm sinh bảng.", HINT_SOURCE)
+
+
+def _reject_row_generators(root: exp.Expression, tables: set[str]) -> None:
+    """Chặn các cách sinh hàng rẻ để liệt kê rồi JOIN dò giá trị nhạy cảm.
+
+    Đây chỉ là giảm thiểu một phần: CROSS JOIN nhiều bảng chữ số (hoặc bảng lớn
+    bất kỳ) vẫn sinh được hàng; phần đó dựa vào giới hạn chi phí/số dòng ở lớp khác.
+    """
+    if any(True for _ in root.find_all(exp.Connect)):
+        raise QueryRejected("Không cho dùng CONNECT BY khi query có bảng chứa cột nhạy cảm.", HINT_GENERATOR)
+    for with_ in root.find_all(exp.With):
+        if with_.args.get("recursive"):
+            raise QueryRejected("Không cho dùng CTE đệ quy khi query có bảng chứa cột nhạy cảm.", HINT_GENERATOR)
+    for cte in root.find_all(exp.CTE):
+        name = norm(cte.alias)
+        for table in cte.this.find_all(exp.Table):
+            if norm(table.name) == name and not table.args.get("db"):
+                raise QueryRejected(
+                    "Không cho dùng CTE đệ quy khi query có bảng chứa cột nhạy cảm.", HINT_GENERATOR
+                )
+    for table in tables:
+        if SEQ_TABLE.fullmatch(table):
+            raise QueryRejected(
+                f"Không cho dùng bảng sinh dãy số {table} khi query có bảng chứa cột nhạy cảm.", HINT_GENERATOR
+            )
+
+
 def _reject_stars(root: exp.Expression, by_column: Mapping[str, Mapping[str, str]]) -> None:
+    sensitive_tables = sorted({t for entries in by_column.values() for t in entries})
     for star in root.find_all(exp.Star):
         holder = star.parent if isinstance(star.parent, exp.Column) else star
         if isinstance(holder.parent, exp.Count):  # COUNT(*) không lộ giá trị
             continue
-        sensitive_tables = sorted({t for entries in by_column.values() for t in entries})
         raise QueryRejected(
             f"Không cho dùng * vì bảng {', '.join(sensitive_tables)} có cột nhạy cảm.", HINT_STAR
         )
