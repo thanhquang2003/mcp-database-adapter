@@ -11,6 +11,7 @@ from dataclasses import dataclass
 
 import sqlglot
 from sqlglot import exp
+from sqlglot.errors import ErrorLevel, UnsupportedError
 from sqlglot.dialects.mysql import MySQL
 from sqlglot.dialects.oracle import Oracle
 
@@ -42,6 +43,12 @@ class McpMariadb(MySQL):
                 return self.binary(expression.this, "NOT REGEXP")
             return super().not_sql(expression)
 
+        def version_sql(self, expression: exp.Version) -> str:
+            # sqlglot đọc `FOR SYSTEM_TIME ...` của MariaDB nhưng sinh lại thành
+            # `FOR TIMESTAMP ...` (sai cú pháp/ngữ nghĩa): báo không hỗ trợ để bị từ chối.
+            self.unsupported("FOR SYSTEM_TIME (system-versioned table)")
+            return ""
+
 
 # Tên đăng ký của các dialect con trong registry của sqlglot (tên lớp viết thường),
 # để nơi khác gọi `.sql(dialect=parsed.dialect)` vẫn sinh SQL chạy được.
@@ -49,6 +56,8 @@ DIALECTS = {"oracle": "mcporacle", "mariadb": "mcpmariadb"}
 
 HINT_SELECT_ONLY = "Chỉ được gửi đúng một câu SELECT hoặc WITH ... SELECT, không ghi/khóa dữ liệu."
 HINT_REWRITE = "Hãy viết lại bằng cú pháp SELECT chuẩn."
+UNSUPPORTED_REASON = ("Câu lệnh dùng cú pháp mà DB đích không hỗ trợ / không thể sinh lại chính xác"
+                      " ({detail}).")
 HINT_FUNCTION = "Bỏ hàm này; chỉ dùng hàm tính toán thông thường (COUNT, SUM, TO_CHAR...)."
 
 # Node bị cấm ở bất kỳ đâu trong cây (kể cả trong CTE, subquery).
@@ -198,12 +207,23 @@ def parse_select(sql: str, db_type: str) -> ParsedQuery:
     for hint in list(root.find_all(exp.Hint)):
         hint.pop()
 
+    out_sql = generate(root, dialect)
+    return ParsedQuery(expression=root, dialect=dialect, sql=out_sql, tables=_real_tables(root))
+
+
+def generate(expression: exp.Expression, dialect: str) -> str:
+    """Sinh lại SQL từ cây; cú pháp sqlglot không sinh lại được chính xác thì từ chối.
+
+    Mặc định sqlglot chỉ cảnh báo rồi lặng lẽ bỏ phần không hỗ trợ (vd. PIVOT trên
+    MariaDB), làm đổi nghĩa câu truy vấn; ở đây buộc ném lỗi. comments=False: bỏ
+    mọi comment, kể cả optimizer hint.
+    """
     try:
-        out_sql = root.sql(dialect=dialect, comments=False)
+        return expression.sql(dialect=dialect, comments=False, unsupported_level=ErrorLevel.RAISE)
+    except UnsupportedError as e:
+        raise QueryRejected(UNSUPPORTED_REASON.format(detail=_first_line(e)), HINT_REWRITE) from e
     except Exception as e:
         raise QueryRejected(f"Không sinh lại được câu SQL: {_first_line(e)}", HINT_REWRITE) from e
-
-    return ParsedQuery(expression=root, dialect=dialect, sql=out_sql, tables=_real_tables(root))
 
 
 def _is_select_root(node: exp.Expression) -> bool:
@@ -299,13 +319,13 @@ def _func_name(node: exp.Func) -> str:
 def _real_tables(root: exp.Expression) -> tuple[str, ...]:
     seen: dict[str, None] = {}
     for table in root.find_all(exp.Table, bfs=False):
-        if not table.name or _is_cte_ref(table):
+        if not table.name or is_cte_ref(table):
             continue
         seen.setdefault(norm(table.name), None)
     return tuple(seen)
 
 
-def _is_cte_ref(table: exp.Table) -> bool:
+def is_cte_ref(table: exp.Table) -> bool:
     """Bảng không có schema và trùng tên một CTE nhìn thấy được tại vị trí đó.
 
     Trong cùng một WITH, CTE thứ i chỉ thấy các CTE đứng trước nó; tự tham

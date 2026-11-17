@@ -8,11 +8,11 @@ version = "0.1.0"
 description = "MCP server chỉ-đọc cho Oracle/MariaDB (replica) dùng chung cho Claude"
 requires-python = ">=3.11"
 dependencies = [
-  "mcp>=2.3.0",
-  "sqlglot>=30.32.0",
+  "mcp>=2.3.0,<2.4",
+  "sqlglot>=30.32.0,<30.33",
   "PyYAML>=6.0.3",
-  "oracledb>=26.1.0",
-  "PyMySQL>=1.2.4",
+  "oracledb>=26.1.0,<27",
+  "PyMySQL>=1.2.4,<2",
 ]
 
 [project.optional-dependencies]

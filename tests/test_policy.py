@@ -347,7 +347,11 @@ TABLE_OPERATORS = [
 @pytest.mark.parametrize("parse,sql", TABLE_OPERATORS)
 def test_table_operators_on_large_table_rejected(parse, sql):
     err = rejected(sql, parse=parse)
-    assert "subquery/CTE" in err.hint
+    if parse is PM:
+        # MariaDB không có PIVOT/UNPIVOT: bị cổng parser từ chối trước (fix wave A).
+        assert "không hỗ trợ" in err.reason
+    else:
+        assert "subquery/CTE" in err.hint
 
 
 TABLE_CLAUSES_OK = [
@@ -420,3 +424,14 @@ def test_limit_mariadb_outputs():
 def test_non_ascii_digits_in_date_literal_rejected():
     rejected("SELECT COUNT(*) FROM cdr_history WHERE call_time >= '２０２６-11-10'")
     rejected("SELECT COUNT(*) FROM cdr_history WHERE call_time >= TO_DATE('２０２６1110','YYYYMMDD')")
+
+
+def test_apply_row_limit_rejects_unsupported_construct():
+    # Cây có PIVOT nhưng sinh theo dialect MariaDB: phải từ chối, không lặng lẽ bỏ PIVOT.
+    from dataclasses import replace
+    from mcp_database.guard.parser import DIALECTS
+    parsed = P("SELECT * FROM t PIVOT (SUM(a) FOR b IN (1, 2))")
+    bad = replace(parsed, dialect=DIALECTS["mariadb"])
+    with pytest.raises(QueryRejected) as info:
+        apply_row_limit(bad, 10)
+    assert "không hỗ trợ" in info.value.reason

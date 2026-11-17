@@ -14,7 +14,7 @@ from typing import Iterator, Mapping
 from sqlglot import exp
 
 from mcp_database.config import Guard, TableGuard
-from mcp_database.guard.parser import DIALECTS, ParsedQuery, QueryRejected, _is_cte_ref
+from mcp_database.guard.parser import DIALECTS, ParsedQuery, QueryRejected, generate, is_cte_ref
 from mcp_database.names import norm
 
 HINT_BOUND = "dùng literal ngày hoặc SYSDATE/NOW() ± n ngày"
@@ -43,7 +43,7 @@ def enforce_time_range(parsed: ParsedQuery, guard: Guard, large: set[str], today
         return
     large = {norm(t) for t in large}
     for table in parsed.expression.find_all(exp.Table):
-        if not table.name or _is_cte_ref(table):
+        if not table.name or is_cte_ref(table):
             continue
         name = norm(table.name)
         if name not in large:
@@ -84,9 +84,9 @@ def apply_row_limit(parsed: ParsedQuery, max_rows: int) -> str:
                 "Dùng số dòng cụ thể: FETCH FIRST n ROWS ONLY (Oracle) hoặc LIMIT n (MariaDB).",
             )
         n = min(count, max_rows)
-    # comments=False cố ý: bỏ mọi comment còn sót, kể cả optimizer hint Oracle
-    # (/*+ FULL(...) */) để Claude không ép full scan qua hint.
-    return root.limit(n).sql(dialect=parsed.dialect, comments=False)
+    # generate() bỏ mọi comment còn sót, kể cả optimizer hint Oracle (/*+ FULL(...) */)
+    # để Claude không ép full scan qua hint, và từ chối cú pháp không sinh lại được.
+    return generate(root.limit(n), parsed.dialect)
 
 
 # --- Phạm vi và tham chiếu ---------------------------------------------------

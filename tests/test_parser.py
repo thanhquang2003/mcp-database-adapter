@@ -363,3 +363,32 @@ def test_extract_datetime_allowed(sql, db_type):
 def test_mariadb_error_based_extractvalue_rejected():
     err = rejection("SELECT 1 FROM t WHERE EXTRACTVALUE(1, CONCAT(0x7e, (SELECT msisdn FROM cdr LIMIT 1))) = 1", "mariadb")
     assert "EXTRACTVALUE" in err.reason and err.hint
+
+
+# --- Fix wave A: cú pháp sqlglot không sinh lại được thì từ chối ------------------
+
+UNSUPPORTED_MARIADB = [
+    "SELECT * FROM t PIVOT (SUM(a) FOR b IN (1, 2))",
+    "SELECT * FROM t UNPIVOT (v FOR k IN (a, b))",
+    "SELECT * FROM t FOR SYSTEM_TIME ALL",
+    "SELECT * FROM t FOR SYSTEM_TIME AS OF TIMESTAMP '2024-01-01 00:00:00'",
+    "SELECT * FROM t FOR SYSTEM_TIME BETWEEN 1 AND 2",
+]
+
+
+@pytest.mark.parametrize("sql", UNSUPPORTED_MARIADB)
+def test_mariadb_unsupported_constructs_rejected(sql):
+    err = rejection(sql, "mariadb")
+    assert "không hỗ trợ" in err.reason and err.hint
+
+
+def test_oracle_pivot_and_flashback_still_round_trip():
+    p = parse_select("SELECT * FROM t PIVOT (SUM(a) FOR b IN (1, 2))", "oracle")
+    assert "PIVOT" in p.sql.upper()
+    p = parse_select("SELECT * FROM t AS OF TIMESTAMP SYSDATE - 1", "oracle")
+    assert "AS OF TIMESTAMP" in p.sql.upper()
+
+
+def test_is_cte_ref_public():
+    from mcp_database.guard import parser
+    assert callable(parser.is_cte_ref) and not hasattr(parser, "_is_cte_ref")
