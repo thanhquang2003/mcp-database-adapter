@@ -20,15 +20,16 @@ systems:
       timeout_seconds: 30        # Timeout mỗi truy vấn (mặc định 30)
       max_concurrent: 2          # Số truy vấn đồng thời tối đa (mặc định 2)
       large_table_rows: 5000000  # Bảng lớn hơn ngưỡng này bắt buộc lọc theo cột thời gian
-      max_explain_cost: 100000   # Chặn nếu cost trong EXPLAIN vượt ngưỡng
-      max_explain_rows: 5000000  # Chặn nếu số dòng ước lượng vượt ngưỡng
+      max_explain_cost: 100000   # Chặn nếu cost trong EXPLAIN vượt ngưỡng (chỉ Oracle; MariaDB không có cost)
+      max_explain_rows: 5000000  # Chặn nếu số dòng ước lượng vượt ngưỡng. Hai ngưỡng này chỉ là điểm xuất phát, chỉnh theo replica thật
       tables:                    # Bảng lớn: cột thời gian bắt buộc và khoảng tối đa
         cdr_history:
           time_column: call_time
           max_range_days: 7
-      sensitive_columns:         # TABLE.COLUMN: hash (băm) | redact (che hoàn toàn)
+      sensitive_columns:         # TABLE.COLUMN: hash (băm HMAC) | redact (che hoàn toàn). Cần MCP_DATABASE_HMAC_KEY
         cdr_history.msisdn: hash
         cdr_history.imsi: redact
+        subscriber.msisdn: hash
 
   crm:
     db_type: mariadb
