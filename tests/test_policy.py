@@ -313,20 +313,6 @@ def test_limit_union_applies_to_whole_statement():
         assert root.expression.args.get("limit") is None
 
 
-def test_limit_with_ties_or_percent_is_wrapped():
-    for sql in (
-        "SELECT a FROM t ORDER BY a FETCH FIRST 10 ROWS WITH TIES",
-        "SELECT a FROM t FETCH FIRST 10 PERCENT ROWS ONLY",
-    ):
-        out = apply_row_limit(P(sql), 1000)
-        root = P(out).expression
-        fetch = root.args["limit"]
-        assert fetch.args["count"].name == "1000"
-        opts = fetch.args.get("limit_options")
-        assert not (opts and (opts.args.get("percent") or opts.args.get("with_ties")))
-        assert root.find(exp.Subquery) is not None
-
-
 def test_limit_does_not_mutate_parsed():
     parsed = PM("SELECT a FROM t")
     apply_row_limit(parsed, 10)
@@ -342,3 +328,95 @@ def test_limit_output_is_valid_for_dialect():
 def test_rejection_quotes_bound_in_target_dialect():
     err = rejected("SELECT COUNT(*) FROM cdr_history WHERE call_time >= SYSDATE - 7.5")
     assert "SYSDATE - 7.5" in err.reason
+
+
+# --- Review round 1 ----------------------------------------------------------
+
+TABLE_OPERATORS = [
+    (P, "SELECT * FROM cdr_history MATCH_RECOGNIZE (ORDER BY id MEASURES 1 AS x ALL ROWS PER MATCH "
+        "PATTERN (a) DEFINE a AS 1=1) WHERE call_time >= SYSDATE - 7"),
+    (P, "SELECT * FROM cdr_history c MATCH_RECOGNIZE (ORDER BY id MEASURES 1 AS x ALL ROWS PER MATCH "
+        "PATTERN (a) DEFINE a AS 1=1) WHERE call_time >= SYSDATE - 7"),
+    (P, "SELECT * FROM cdr_history UNPIVOT (v FOR k IN (a, b)) WHERE call_time >= SYSDATE - 7"),
+    (P, "SELECT * FROM cdr_history PIVOT (COUNT(*) FOR status IN (1,2)) WHERE call_time >= SYSDATE - 7"),
+    (PM, "SELECT * FROM cdr_history UNPIVOT (v FOR k IN (a, b)) WHERE call_time >= NOW() - INTERVAL 7 DAY"),
+    (PM, "SELECT * FROM cdr_history PIVOT (COUNT(*) FOR status IN (1,2)) WHERE call_time >= NOW() - INTERVAL 7 DAY"),
+]
+
+
+@pytest.mark.parametrize("parse,sql", TABLE_OPERATORS)
+def test_table_operators_on_large_table_rejected(parse, sql):
+    err = rejected(sql, parse=parse)
+    assert "subquery/CTE" in err.hint
+
+
+TABLE_CLAUSES_OK = [
+    (P, "SELECT * FROM cdr_history c WHERE c.call_time >= SYSDATE - 7"),
+    (P, "SELECT * FROM cdr_history PARTITION (p1) WHERE call_time >= SYSDATE - 7"),
+    (P, "SELECT * FROM cdr_history AS OF TIMESTAMP SYSDATE - 1 WHERE call_time >= SYSDATE - 7"),
+    (P, "SELECT * FROM cdr_history c SAMPLE (1) WHERE call_time >= SYSDATE - 7"),
+    (PM, "SELECT * FROM cdr_history FORCE INDEX (i) WHERE call_time >= NOW() - INTERVAL 7 DAY"),
+    # Lọc trước trong CTE rồi mới PIVOT/MATCH_RECOGNIZE trên kết quả.
+    (P, "WITH x AS (SELECT * FROM cdr_history WHERE call_time >= SYSDATE - 7) "
+        "SELECT * FROM x PIVOT (COUNT(*) FOR status IN (1,2))"),
+    (P, "WITH x AS (SELECT * FROM cdr_history WHERE call_time >= SYSDATE - 7) SELECT * FROM x "
+        "MATCH_RECOGNIZE (ORDER BY id MEASURES 1 AS m ALL ROWS PER MATCH PATTERN (a) DEFINE a AS 1=1)"),
+]
+
+
+@pytest.mark.parametrize("parse,sql", TABLE_CLAUSES_OK)
+def test_plain_table_clauses_and_prefiltered_cte_accepted(parse, sql):
+    E(sql, parse=parse)
+
+
+@pytest.mark.parametrize("digit", ["²", "٣", "７"])
+def test_unicode_digits_rejected_cleanly(digit):
+    rejected(f"SELECT COUNT(*) FROM cdr_history WHERE call_time >= SYSDATE - INTERVAL '{digit}' DAY")
+
+
+GOOD_FORMS = [
+    "SELECT COUNT(*) FROM cdr_history WHERE call_time >= CAST('2026-11-10' AS DATE)",
+    "SELECT COUNT(*) FROM cdr_history WHERE call_time >= TRUNC(SYSDATE,'DD') - 7",
+]
+
+
+@pytest.mark.parametrize("sql", GOOD_FORMS)
+def test_cast_and_trunc_dd_bounds(sql):
+    E(sql)
+
+
+def test_cast_bound_range_checked():
+    rejected("SELECT COUNT(*) FROM cdr_history WHERE call_time >= CAST('2026-01-01' AS DATE)")
+    rejected("SELECT COUNT(*) FROM cdr_history WHERE call_time >= TRUNC(SYSDATE,'MM') - 7")
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT a FROM t ORDER BY a FETCH FIRST 10 ROWS WITH TIES",
+        "SELECT a FROM t FETCH FIRST 10 PERCENT ROWS ONLY",
+        "SELECT a FROM t FETCH FIRST ROWS ONLY",
+    ],
+)
+def test_limit_unusual_fetch_rejected(sql):
+    with pytest.raises(QueryRejected) as info:
+        apply_row_limit(P(sql), 1000)
+    assert "số dòng" in info.value.hint
+
+
+def test_limit_strips_optimizer_hints():
+    out = apply_row_limit(P("SELECT /*+ FULL(c) */ a FROM cdr_history c"), 1000)
+    assert "/*" not in out and "FULL" not in out.upper()
+
+
+def test_limit_mariadb_outputs():
+    assert apply_row_limit(PM("SELECT a FROM t LIMIT 10 OFFSET 3"), 1000) == "SELECT a FROM t LIMIT 10 OFFSET 3"
+    assert (
+        apply_row_limit(PM("SELECT a FROM t UNION ALL SELECT a FROM u LIMIT 5000"), 1000)
+        == "SELECT a FROM t UNION ALL SELECT a FROM u LIMIT 1000"
+    )
+
+
+def test_non_ascii_digits_in_date_literal_rejected():
+    rejected("SELECT COUNT(*) FROM cdr_history WHERE call_time >= '２０２６-11-10'")
+    rejected("SELECT COUNT(*) FROM cdr_history WHERE call_time >= TO_DATE('２０２６1110','YYYYMMDD')")

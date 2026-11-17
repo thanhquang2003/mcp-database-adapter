@@ -56,10 +56,12 @@ def enforce_time_range(parsed: ParsedQuery, guard: Guard, large: set[str], today
                 "trong systems.yaml, hoặc truy vấn bảng khác.",
             )
         select = _owning_select(table, name)
-        if select.args.get("connect") is not None:
+        operator = _row_source_operator(select, table)
+        if operator is not None:
             raise QueryRejected(
-                f"Không cho dùng CONNECT BY trên bảng lớn {name}: Oracle duyệt cây trước khi lọc WHERE.",
-                f"Lọc {name} theo {tg.time_column} trong một subquery/CTE rồi mới CONNECT BY trên kết quả đó.",
+                f"Không cho dùng {operator} trên bảng lớn {name}: WHERE chỉ lọc kết quả của {operator}, "
+                "bảng vẫn bị đọc toàn bộ trước đó.",
+                f"Lọc {name} theo {tg.time_column} trong một subquery/CTE rồi mới {operator} trên kết quả đó.",
             )
         _check_reference(select, table, name, tg, today, parsed.dialect)
 
@@ -68,7 +70,7 @@ def apply_row_limit(parsed: ParsedQuery, max_rows: int) -> str:
     """SQL cuối có giới hạn dòng ở gốc câu lệnh (`FETCH FIRST n ROWS ONLY` / `LIMIT n`).
 
     Đã có giới hạn số nguyên thì lấy `min`; giới hạn dạng khác (PERCENT, WITH TIES,
-    biểu thức) thì bọc cả câu vào subquery rồi giới hạn bên ngoài.
+    biểu thức, FETCH không có số) bị từ chối.
     """
     root = parsed.expression.copy()
     n = max_rows
@@ -76,9 +78,14 @@ def apply_row_limit(parsed: ParsedQuery, max_rows: int) -> str:
     if existing is not None:
         count = _plain_count(existing)
         if count is None:
-            root = exp.select("*").from_(root.subquery("mcp_q"))
-        else:
-            n = min(count, max_rows)
+            raise QueryRejected(
+                f"Không hỗ trợ giới hạn dòng dạng '{existing.sql(dialect=parsed.dialect, comments=False)}' "
+                "(PERCENT, WITH TIES hoặc biểu thức).",
+                "Dùng số dòng cụ thể: FETCH FIRST n ROWS ONLY (Oracle) hoặc LIMIT n (MariaDB).",
+            )
+        n = min(count, max_rows)
+    # comments=False cố ý: bỏ mọi comment còn sót, kể cả optimizer hint Oracle
+    # (/*+ FULL(...) */) để Claude không ép full scan qua hint.
     return root.limit(n).sql(dialect=parsed.dialect, comments=False)
 
 
@@ -93,6 +100,26 @@ def _owning_select(table: exp.Table, name: str) -> exp.Select:
         f"Bảng lớn {name} phải nằm trực tiếp trong FROM/JOIN của một câu SELECT.",
         f"Viết {name} trực tiếp sau FROM/JOIN (không bọc ngoặc) và lọc theo cột thời gian trong WHERE.",
     )
+
+
+# Thuộc tính của Table không đổi nguồn dòng: tên, alias, partition, flashback
+# (AS OF), sample, index hint MariaDB. Thuộc tính khác (PIVOT/UNPIVOT, ...) coi
+# như toán tử trên bảng và bị từ chối.
+_PLAIN_TABLE_ARGS = frozenset({"this", "db", "catalog", "alias", "partition", "version", "sample", "hints"})
+
+
+def _row_source_operator(select: exp.Select, table: exp.Table) -> str | None:
+    """Toán tử làm WHERE lọc trên kết quả của nó thay vì trên chính bảng."""
+    if select.args.get("connect") is not None:
+        return "CONNECT BY"
+    if select.args.get("match") is not None:
+        return "MATCH_RECOGNIZE"
+    if select.args.get("pivots"):
+        return "PIVOT/UNPIVOT"
+    for key, value in table.args.items():
+        if key not in _PLAIN_TABLE_ARGS and value not in (None, [], False):
+            return "PIVOT/UNPIVOT" if key == "pivots" else key.upper()
+    return None
 
 
 def _sources(select: exp.Select) -> list[exp.Expression]:
@@ -192,11 +219,15 @@ def _conjuncts(node: exp.Expression) -> Iterator[exp.Expression]:
 
 # --- Tính cận thành ngày ----------------------------------------------------
 
-_ISO = re.compile(r"(\d{4}-\d{2}-\d{2})(?: (\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?)?")
+# Chuỗi ISO trần, CAST('...' AS DATE) và literal DATE/TIMESTAMP được hiểu là
+# YYYY-MM-DD[ HH:MM:SS]. Với Oracle, chuỗi trần/CAST phụ thuộc NLS của phiên:
+# tầng kết nối Oracle (Task 5) phải cố định NLS_DATE_FORMAT/NLS_TIMESTAMP_FORMAT
+# theo đúng định dạng này. re.ASCII: \d chỉ khớp 0-9.
+_ISO = re.compile(r"(\d{4}-\d{2}-\d{2})(?: (\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?)?", re.ASCII)
 _TO_DATE_FORMATS = {
-    "%Y-%m-%d": re.compile(r"\d{4}-\d{2}-\d{2}"),
-    "%Y-%m-%d %H:%M:%S": re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}"),
-    "%Y%m%d": re.compile(r"\d{8}"),
+    "%Y-%m-%d": re.compile(r"\d{4}-\d{2}-\d{2}", re.ASCII),
+    "%Y-%m-%d %H:%M:%S": re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", re.ASCII),
+    "%Y%m%d": re.compile(r"\d{8}", re.ASCII),
 }
 # Định dạng sqlglot gán cho literal TIMESTAMP '...' của Oracle.
 _TIMESTAMP_LITERAL_FORMAT = "%Y-%m-%d %H:%M:%S.%f"
@@ -211,6 +242,9 @@ def _bound(node: exp.Expression, who: str, dialect: str, today: date, upper: boo
         if upper and value.time() != datetime.min.time():
             return value.date() + timedelta(days=1)
         return value.date()
+    # Cận tương đối (SYSDATE/NOW() ± n) tính theo ngày `today`, không làm tròn lên:
+    # giờ thực tế trong ngày bị bỏ qua nên khoảng có thể dài hơn tính toán tối đa
+    # 1 ngày. Chấp nhận độ lệch này để kết quả không phụ thuộc đồng hồ.
     rel = _relative(node, dialect == DIALECTS["oracle"], today)
     if rel is not None:
         return rel
@@ -306,7 +340,7 @@ def _days(node: exp.Expression, oracle: bool) -> int | None:
         literal = node
     else:
         return None
-    if isinstance(literal, exp.Literal) and str(literal.this).isdigit():
+    if isinstance(literal, exp.Literal) and _ascii_int(literal.this):
         return int(literal.this)
     return None
 
@@ -324,6 +358,11 @@ def _plain_count(limit: exp.Expression) -> int | None:
         count = limit.args.get("count")
     else:
         return None
-    if isinstance(count, exp.Literal) and not count.is_string and str(count.this).isdigit():
+    if isinstance(count, exp.Literal) and not count.is_string and _ascii_int(count.this):
         return int(count.this)
     return None
+
+
+def _ascii_int(text: object) -> bool:
+    # str.isdigit() nhận cả '²', '٣' (int() lỗi hoặc DB hiểu khác): chỉ nhận 0-9.
+    return re.fullmatch(r"[0-9]+", str(text)) is not None
