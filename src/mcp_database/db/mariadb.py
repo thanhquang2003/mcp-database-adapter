@@ -75,27 +75,39 @@ class MariaDBConnector:
             rows = [r if isinstance(r, dict) else dict(zip(names, r)) for r in cur.fetchall()]
             return summarize_mariadb_explain(rows)
 
-    def table_info(self, table: str) -> TableInfo:
+    def table_info(self, table: str, timeout_seconds: int | None = None) -> TableInfo:
+        """Cột, index và TABLE_ROWS.
+
+        Tìm bảng không phân biệt hoa thường (lower_case_table_names khác nhau giữa các
+        server); nếu có nhiều bảng chỉ khác hoa thường thì ưu tiên bảng viết đúng y hệt.
+        Sau đó tra cột/index theo đúng tên thật. Định danh chỉ đi qua bind parameter.
+        """
         schema, name = parse_table_name(table)
-        with self._session(self.profile.guard.timeout_seconds) as s:
+        with self._session(timeout_seconds or self.profile.guard.timeout_seconds) as s:
             cur = s.cursor
-            b = (schema, name)
+            cur.execute("SELECT table_schema, table_name, table_rows FROM information_schema.tables "
+                        "WHERE LOWER(table_schema) = LOWER(COALESCE(%s, DATABASE())) "
+                        "AND LOWER(table_name) = LOWER(%s) ORDER BY table_schema, table_name",
+                        (schema, name))
+            found = cur.fetchall()
+            if not found:
+                raise TableNotFound(f"Không tìm thấy bảng '{table}'")
+            exact = [r for r in found if r[1] == name and (schema is None or r[0] == schema)]
+            real_schema, real_name, rows = (exact or found)[0]
+            b = (real_schema, real_name)
             cur.execute("SELECT column_name, column_type, is_nullable "
                         "FROM information_schema.columns "
-                        "WHERE table_schema = COALESCE(%s, DATABASE()) AND table_name = %s "
+                        "WHERE table_schema = %s AND table_name = %s "
                         "ORDER BY ordinal_position", b)
             cols = [ColumnInfo(r[0], r[1], r[2] == "YES") for r in cur.fetchall()]
             if not cols:
                 raise TableNotFound(f"Không tìm thấy bảng '{table}'")
             cur.execute("SELECT index_name, non_unique, column_name "
                         "FROM information_schema.statistics "
-                        "WHERE table_schema = COALESCE(%s, DATABASE()) AND table_name = %s "
+                        "WHERE table_schema = %s AND table_name = %s "
                         "ORDER BY index_name, seq_in_index", b)
             idx: dict[str, IndexInfo] = {}
             for iname, non_unique, col in cur.fetchall():
                 idx.setdefault(iname, IndexInfo(iname, [], int(non_unique) == 0)).columns.append(col)
-            cur.execute("SELECT table_rows FROM information_schema.tables "
-                        "WHERE table_schema = COALESCE(%s, DATABASE()) AND table_name = %s", b)
-            row = cur.fetchone()
-            est = int(row[0]) if row and row[0] is not None else None
+            est = int(rows) if rows is not None else None
             return TableInfo(cols, list(idx.values()), est)

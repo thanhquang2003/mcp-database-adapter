@@ -106,3 +106,26 @@ def test_insert_rejected(conn, writer):
 def test_connector_still_usable_after_truncation(conn, writer):
     conn.execute("SELECT seq FROM seq_1_to_100", 3, 5)
     assert conn.execute("SELECT COUNT(*) FROM it_t", 10, 5).rows == [(2,)]
+
+
+@pytest.mark.parametrize("ref", ["it_t", "IT_T", "It_T"])
+def test_table_info_case_insensitive(conn, writer, ref):
+    ti = conn.table_info(ref)
+    assert [c.name for c in ti.columns] == ["id", "name"]
+    _, _, _, _, database = _parts()
+    for qualified in (f"{database}.{ref}", f"{database.upper()}.{ref}"):
+        assert [c.name for c in conn.table_info(qualified).columns] == ["id", "name"]
+
+
+def test_stats_lookup_through_service(conn, writer):
+    from types import MappingProxyType
+    from mcp_database.config import Config
+    from mcp_database.service import QueryService
+    _, _, _, _, database = _parts()
+    cfg = Config(audit_log=None, systems=MappingProxyType({"it": conn.profile}))
+    svc = QueryService(cfg, connector_factory=lambda p: conn)
+    # Linux: lower_case_table_names=0 nên câu truy vấn phải đúng hoa thường; tra thống kê thì không.
+    r = svc.run("it", f"SELECT COUNT(*) FROM {database}.it_t")
+    assert r.rows == [(2,)]
+    key = ("it", database, "it_t")
+    assert key in svc._stats and svc._stats[key][1] is not None

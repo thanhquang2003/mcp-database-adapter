@@ -58,7 +58,9 @@ def audit_path(tmp_path):
 @pytest.fixture
 def fake():
     return FakeConnector(
-        tables={"CDR_HISTORY": info(50_000_000), "USERS": info(100)},
+        # tra nghiêm ngặt theo đúng cách viết trong SQL
+        tables={"CDR_HISTORY": info(50_000_000), "cdr_history": info(50_000_000),
+                "USERS": info(100), "users": info(100)},
         result=QueryResult(columns=["MSISDN", "COUNT(*)"], rows=list(ROWS), truncated=False),
     )
 
@@ -432,12 +434,109 @@ def test_today_is_injected(tmp_path, audit_path, fake):
 
 
 def test_table_stats_feed_large_table_detection(build, fake):
-    fake.tables["USERS"] = info(10_000_000)  # vượt large_table_rows nhưng không khai báo cột thời gian
+    fake.register("users", info(10_000_000))  # vượt large_table_rows nhưng không khai báo cột thời gian
     svc, _ = build()
     with pytest.raises(QueryRejected) as e:
         svc.run("cdr", "SELECT id FROM users")
     assert "USERS" in e.value.reason
-    assert fake.table_info_calls == ["USERS"]
+    assert fake.table_info_calls == ["users"]
+
+
+# --- Fix wave C: tra thống kê theo tham chiếu như đã viết + cache ------------------
+
+
+class Clock:
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+
+@pytest.fixture
+def clocked(tmp_path, audit_path):
+    def _build(connector, clock, **guard_kw):
+        profiles = [make_profile(tmp_path, **guard_kw)]
+        cfg = Config(audit_log=audit_path, systems=MappingProxyType({p.name: p for p in profiles}))
+        return QueryService(cfg, connector_factory=lambda p: connector, hmac_key=KEY,
+                            today=lambda: TODAY, clock=clock)
+    return _build
+
+
+def test_schema_qualified_stats_mark_table_large(clocked):
+    fake = FakeConnector(tables={("billing", "huge"): info(40_000_000)})
+    svc = clocked(fake, Clock())
+    with pytest.raises(QueryRejected) as e:
+        svc.run("cdr", "SELECT COUNT(*) FROM billing.huge")
+    assert "HUGE" in e.value.reason
+    assert fake.table_info_calls == ["billing.huge"]
+    assert fake.table_info_timeouts == [5]  # min(timeout_seconds=30, 5)
+
+
+def test_schema_qualified_time_filter(clocked):
+    fake = FakeConnector(tables={("billing", "cdr_history"): info(40_000_000)},
+                         plan=PlanSummary(cost=10, est_rows=10, full_scans=["CDR_HISTORY"], text=""))
+    svc = clocked(fake, Clock())
+    with pytest.raises(QueryRejected):
+        svc.run("cdr", "SELECT COUNT(*) FROM billing.cdr_history")
+    fake.plan = PlanSummary(cost=10, est_rows=10, full_scans=[], text="")
+    svc.run("cdr", f"SELECT COUNT(*) FROM billing.cdr_history WHERE {WINDOW}")
+    assert fake.table_info_calls == ["billing.cdr_history"]  # lần hai lấy từ cache
+
+
+@pytest.mark.parametrize("sql", ["SELECT COUNT(*) FROM huge", "SELECT COUNT(*) FROM BILLING.HUGE",
+                                 "SELECT COUNT(*) FROM other.huge"])
+def test_strict_fake_other_spellings_not_found(clocked, sql):
+    fake = FakeConnector(tables={("billing", "huge"): info(40_000_000)})
+    svc = clocked(fake, Clock())
+    svc.run("cdr", sql)  # không có thống kê -> không coi là bảng lớn
+    assert len(fake.executed_sql) == 1
+
+
+def test_quoted_oracle_ref_passed_with_quotes(clocked):
+    fake = FakeConnector(tables={('"Billing"', '"Huge"'): info(40_000_000)})
+    svc = clocked(fake, Clock())
+    with pytest.raises(QueryRejected):
+        svc.run("cdr", 'SELECT COUNT(*) FROM "Billing"."Huge"')
+    assert fake.table_info_calls == ['"Billing"."Huge"']
+
+
+def test_same_name_two_schemas_uses_larger(clocked):
+    fake = FakeConnector(tables={("a", "t"): info(100), ("b", "t"): info(40_000_000)})
+    svc = clocked(fake, Clock())
+    with pytest.raises(QueryRejected) as e:
+        svc.run("cdr", "SELECT COUNT(*) FROM a.t JOIN b.t ON 1=1")
+    assert "T" in e.value.reason
+    assert sorted(fake.table_info_calls) == ["a.t", "b.t"]
+
+
+def test_stats_cache_ttl(clocked):
+    clock = Clock()
+    fake = FakeConnector(tables={(None, "users"): info(100)})
+    svc = clocked(fake, clock)
+    svc.run("cdr", "SELECT id FROM users")
+    svc.run("cdr", "SELECT id FROM users")
+    assert fake.table_info_calls == ["users"]
+    clock.now += 299
+    svc.run("cdr", "SELECT id FROM users")
+    assert len(fake.table_info_calls) == 1
+    clock.now += 2
+    svc.run("cdr", "SELECT id FROM users")
+    assert len(fake.table_info_calls) == 2
+
+
+@pytest.mark.parametrize("error", [None, DatabaseError(1234), QueryTimeout(5)])
+def test_failed_stats_lookup_cached_briefly(clocked, error):
+    clock = Clock()
+    fake = FakeConnector()
+    fake.table_info_error = error
+    svc = clocked(fake, clock)
+    svc.run("cdr", "SELECT id FROM users")
+    svc.run("cdr", "SELECT id FROM users")
+    assert len(fake.table_info_calls) == 1
+    clock.now += 31
+    svc.run("cdr", "SELECT id FROM users")
+    assert len(fake.table_info_calls) == 2
 
 
 @pytest.mark.parametrize("error", [None, DatabaseError(1234), QueryTimeout(5)])

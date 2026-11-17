@@ -53,7 +53,7 @@ class QueryResult:
 
 
 class Connector(Protocol):
-    def table_info(self, table: str) -> TableInfo: ...
+    def table_info(self, table: str, timeout_seconds: int | None = None) -> TableInfo: ...
     def explain(self, sql: str) -> PlanSummary: ...
     def execute(self, sql: str, max_rows: int, timeout_seconds: int) -> QueryResult: ...
 
@@ -114,6 +114,28 @@ def parse_table_name(table: str) -> tuple[str | None, str]:
         schema, name = table.split(".")
         return schema, name
     return None, table
+
+
+_IDENT = r'(?:[A-Za-z_][A-Za-z0-9_$#]*|"[A-Za-z0-9_$#]+")'
+_TABLE_REF_RE = re.compile(rf"({_IDENT})(?:\.({_IDENT}))?")
+
+
+def parse_table_ref(table: str) -> tuple[tuple[str, bool] | None, tuple[str, bool]]:
+    """Như parse_table_name nhưng nhận thêm phần có nháy kép (Oracle): trả về
+    ((schema, có_nháy) | None, (tên, có_nháy)), đã bỏ dấu nháy.
+
+    Phần có nháy chỉ được chứa ký tự định danh an toàn; dạng khác -> TableNotFound.
+    """
+    m = _TABLE_REF_RE.fullmatch(table) if isinstance(table, str) else None
+    if m is None:
+        raise TableNotFound("Tên bảng không hợp lệ: chỉ nhận 'bảng' hoặc 'schema.bảng'")
+
+    def part(text: str) -> tuple[str, bool]:
+        return (text[1:-1], True) if text.startswith('"') else (text, False)
+
+    if m.group(2) is None:
+        return None, part(m.group(1))
+    return part(m.group(1)), part(m.group(2))
 
 
 def _error_code(exc: BaseException) -> str | int | None:

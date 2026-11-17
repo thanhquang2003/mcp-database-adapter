@@ -392,3 +392,24 @@ def test_oracle_pivot_and_flashback_still_round_trip():
 def test_is_cte_ref_public():
     from mcp_database.guard import parser
     assert callable(parser.is_cte_ref) and not hasattr(parser, "_is_cte_ref")
+
+
+# --- Fix wave C: tham chiếu bảng giữ nguyên cách viết ----------------------------
+
+
+def test_table_refs_as_written():
+    p = parse_select(
+        'WITH x AS (SELECT 1 a FROM dual) SELECT * FROM billing.cdr_history c '
+        'JOIN "App"."UserS" u ON c.id = u.id JOIN billing.cdr_history d ON 1=1 '
+        'JOIN x ON 1=1 JOIN Users ON 1=1', "oracle")
+    refs = [(r.schema, r.name, r.schema_quoted, r.name_quoted) for r in p.table_refs]
+    assert len(refs) == 4  # billing.cdr_history chỉ một lần, CTE x bị bỏ
+    assert set(refs) == {(None, "dual", False, False), ("billing", "cdr_history", False, False),
+                         ("App", "UserS", True, True), (None, "Users", False, False)}
+    assert set(p.tables) == {"DUAL", "CDR_HISTORY", "USERS"}
+
+
+def test_table_refs_mariadb_backticks():
+    p = parse_select("SELECT * FROM `Shop`.`Orders` o JOIN items i ON 1=1", "mariadb")
+    refs = [(r.schema, r.name, r.name_quoted) for r in p.table_refs]
+    assert refs == [("Shop", "Orders", True), (None, "items", False)]

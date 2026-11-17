@@ -17,8 +17,10 @@ class FakeCursor:
         for needle, exc in self.conn.fail.items():
             if needle in sql:
                 raise exc
-        for needle, (cols, rows) in self.conn.script.items():
+        for needle, value in self.conn.script.items():
             if needle in sql:
+                # value: (cột, dòng) hoặc hàm(params) -> (cột, dòng) để trả lời theo bind.
+                cols, rows = value(params) if callable(value) else value
                 self.description = [(c,) + (None,) * 6 for c in cols]
                 self._rows = list(rows)
                 return

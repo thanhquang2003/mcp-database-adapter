@@ -166,18 +166,125 @@ def test_mariadb_table_info(monkeypatch, creds, make_profile):
     conn = FakeConnection(script={
         "information_schema.columns": (["c"], [("id", "int(11)", "NO"), ("n", "varchar(5)", "YES")]),
         "information_schema.statistics": (["c"], [("PRIMARY", 0, "id"), ("ix", 1, "n"), ("ix", 1, "id")]),
-        "information_schema.tables": (["c"], [(42,)]),
+        "information_schema.tables": (["s", "t", "r"], [("db1", "users", 42)]),
     })
     cls = setup(monkeypatch, "mariadb", conn)
-    ti = cls(make_profile("mariadb")).table_info("db1.users")
+    ti = cls(make_profile("mariadb")).table_info("db1.USERS")
     assert [c.name for c in ti.columns] == ["id", "n"] and ti.columns[1].nullable is True
     assert {i.name: (i.columns, i.unique) for i in ti.indexes} == {
         "PRIMARY": (["id"], True), "ix": (["n", "id"], False)}
     assert ti.estimated_rows == 42
+    execs = [e for e in conn.log if e[0] == "execute" and e[2]]
     # identifiers only as bind params
-    for e in conn.log:
-        if e[0] == "execute" and e[2]:
-            assert "users" not in e[1] and "db1" not in e[1]
+    for e in execs:
+        assert "users" not in e[1].lower().replace("information_schema", "") and "db1" not in e[1]
+    # tìm bảng không phân biệt hoa thường, sau đó tra cột/index theo tên thật
+    lookup = next(e for e in execs if "information_schema.tables" in e[1])
+    assert "LOWER(table_schema) = LOWER(COALESCE(%s, DATABASE()))" in lookup[1]
+    assert "LOWER(table_name) = LOWER(%s)" in lookup[1] and lookup[2] == ("db1", "USERS")
+    cols = next(e for e in execs if "information_schema.columns" in e[1])
+    assert cols[2] == ("db1", "users")
+
+
+def test_mariadb_table_info_prefers_exact_case(monkeypatch, creds, make_profile):
+    conn = FakeConnection(script={
+        "information_schema.tables": (["s", "t", "r"], [("d", "T", 5), ("d", "t", 7)]),
+        "information_schema.columns": (["c"], [("id", "int", "NO")]),
+        "information_schema.statistics": (["c"], []),
+    })
+    cls = setup(monkeypatch, "mariadb", conn)
+    assert cls(make_profile("mariadb")).table_info("t").estimated_rows == 7
+
+
+def test_mariadb_table_info_not_found(monkeypatch, creds, make_profile):
+    conn = FakeConnection(script={"information_schema.tables": (["s", "t", "r"], [])})
+    cls = setup(monkeypatch, "mariadb", conn)
+    with pytest.raises(LookupError):
+        cls(make_profile("mariadb")).table_info("nope")
+
+
+@pytest.mark.parametrize("kind", ["oracle", "mariadb"])
+def test_table_info_timeout_parameter(monkeypatch, creds, make_profile, kind):
+    conn = FakeConnection(script={"CURRENT_SCHEMA": (["s"], [("APP",)])})
+    cls = setup(monkeypatch, kind, conn)
+    with pytest.raises(LookupError):
+        cls(make_profile(kind)).table_info("t", timeout_seconds=3)
+    if kind == "oracle":
+        assert conn.call_timeout == 3000
+    else:
+        assert "SET SESSION max_statement_time = 3" in conn.statements()
+
+
+def _oracle_dict(owner_tables, synonyms=(), num_rows=None):
+    """Từ điển Oracle giả: owner_tables = {(owner, table): [cột]}; synonyms = [(owner, syn, t_owner, t_name)]."""
+    def cols(params):
+        found = owner_tables.get((params["owner"], params["t"]))
+        return ["c"], [(c, "NUMBER", "Y") for c in (found or [])]
+
+    def syns(params):
+        owners = {params["owner"], "PUBLIC"} if params.get("pub") else {params["owner"]}
+        rows = [(to, tn) for (o, sn, to, tn) in synonyms if o in owners and sn == params["t"]]
+        rows.sort(key=lambda r: 0)
+        return ["o", "t"], rows[:1]
+
+    def nrows(params):
+        found = (params["owner"], params["t"]) in owner_tables
+        return ["n"], [(num_rows.get((params["owner"], params["t"])),)] if found and num_rows else []
+
+    return {
+        "CURRENT_SCHEMA": (["s"], [("APP",)]),
+        "all_tab_columns": cols,
+        "all_synonyms": syns,
+        "all_ind_columns": (["c"], []),
+        "all_tables": nrows,
+    }
+
+
+def _binds(conn, needle):
+    return [e[2] for e in conn.log if e[0] == "execute" and needle in e[1]]
+
+
+@pytest.mark.parametrize("ref,owner,table", [
+    ("billing.cdr", "BILLING", "CDR"),
+    ("Billing.Cdr", "BILLING", "CDR"),
+    ('"Billing"."CdrX"', "Billing", "CdrX"),
+    ('billing."cdr"', "BILLING", "cdr"),
+    ("cdr", "APP", "CDR"),
+])
+def test_oracle_table_info_identifier_case(monkeypatch, creds, make_profile, ref, owner, table):
+    conn = FakeConnection(script=_oracle_dict({(owner, table): ["ID"]}, num_rows={(owner, table): 9}))
+    cls = setup(monkeypatch, "oracle", conn)
+    ti = cls(make_profile("oracle")).table_info(ref)
+    assert [c.name for c in ti.columns] == ["ID"] and ti.estimated_rows == 9
+    assert _binds(conn, "all_tab_columns")[0] == {"owner": owner, "t": table}
+
+
+def test_oracle_table_info_via_private_or_public_synonym(monkeypatch, creds, make_profile):
+    conn = FakeConnection(script=_oracle_dict(
+        {("BILLING", "CDR_HISTORY"): ["ID"]},
+        synonyms=[("PUBLIC", "CDR_HISTORY", "BILLING", "CDR_HISTORY")],
+        num_rows={("BILLING", "CDR_HISTORY"): 40_000_000}))
+    cls = setup(monkeypatch, "oracle", conn)
+    ti = cls(make_profile("oracle")).table_info("cdr_history")
+    assert ti.estimated_rows == 40_000_000
+    syn_sql = next(e[1] for e in conn.log if e[0] == "execute" and "all_synonyms" in e[1])
+    assert "db_link IS NULL" in syn_sql and "'PUBLIC'" in syn_sql
+    assert _binds(conn, "all_tab_columns")[-1] == {"owner": "BILLING", "t": "CDR_HISTORY"}
+
+
+def test_oracle_table_info_schema_qualified_synonym_no_public(monkeypatch, creds, make_profile):
+    conn = FakeConnection(script=_oracle_dict(
+        {("REAL", "T"): ["ID"]}, synonyms=[("PUBLIC", "T", "REAL", "T")]))
+    cls = setup(monkeypatch, "oracle", conn)
+    with pytest.raises(LookupError):
+        cls(make_profile("oracle")).table_info("other.t")
+    assert all(not b.get("pub") for b in _binds(conn, "all_synonyms"))
+
+
+def test_oracle_table_info_view_has_no_estimate(monkeypatch, creds, make_profile):
+    conn = FakeConnection(script=_oracle_dict({("APP", "V"): ["ID"]}))  # không có trong all_tables
+    cls = setup(monkeypatch, "oracle", conn)
+    assert cls(make_profile("oracle")).table_info("v").estimated_rows is None
 
 
 def test_oracle_table_info_missing_raises_lookup(monkeypatch, creds, make_profile):
@@ -202,7 +309,8 @@ def test_oracle_table_info(monkeypatch, creds, make_profile):
 
 
 @pytest.mark.parametrize("kind", ["oracle", "mariadb"])
-@pytest.mark.parametrize("bad", ["a b", "t;drop table x", "a.b.c", "", "1abc", "t' or '1", "a.", "`t`"])
+@pytest.mark.parametrize("bad", ["a b", "t;drop table x", "a.b.c", "", "1abc", "t' or '1", "a.", "`t`",
+                                 '"a"b"', '"a b"', '"t', '""'])
 def test_table_info_rejects_bad_names(monkeypatch, creds, make_profile, kind, bad):
     conn = FakeConnection()
     cls = setup(monkeypatch, kind, conn)

@@ -52,9 +52,20 @@ def make_profile(tmp_path, name="cdr", db_type="oracle"):
         is_replica=True, allow_primary=False)
 
 
+# FakeConnector tra bảng nghiêm ngặt theo đúng chuỗi được truyền vào.
+_TABLES = {}
+for _k in ("cdr_history", "CDR_HISTORY", "APP.CDR_HISTORY", '"CDR_HISTORY"', '"APP"."CDR_HISTORY"',
+           "users", "USERS", '"USERS"', "`users`"):
+    _TABLES[_k] = None
+
+
+def _tables():
+    return {k: (cdr_info() if "CDR" in k.upper() else users_info()) for k in _TABLES}
+
+
 @pytest.fixture
 def fake():
-    return FakeConnector(tables={"CDR_HISTORY": cdr_info(), "USERS": users_info()})
+    return FakeConnector(tables=_tables())
 
 
 @pytest.fixture
@@ -303,7 +314,7 @@ class RoutingFake(FakeConnector):
 
 @pytest.fixture
 def routing():
-    return RoutingFake(tables={"CDR_HISTORY": cdr_info(), "USERS": users_info()})
+    return RoutingFake(tables=_tables())
 
 
 @pytest.mark.parametrize("column", ["a); DROP TABLE t; --", "x y", "1abc", "a.b", "", "ID\n"])

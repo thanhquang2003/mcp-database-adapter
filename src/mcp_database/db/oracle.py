@@ -14,7 +14,7 @@ import oracledb
 from ..config import SystemProfile
 from ..names import norm
 from .base import (ColumnInfo, IndexInfo, PlanSummary, QueryResult, TableInfo,
-                   TableNotFound, get_credentials, parse_table_name, run_query, session)
+                   TableNotFound, get_credentials, parse_table_ref, run_query, session)
 
 # DPY-4024: call_timeout của driver; ORA-01013 / ORA-03156: bị ngắt do hết thời gian.
 TIMEOUT_CODES = frozenset({"DPY-4024", "ORA-01013", "ORA-03156"})
@@ -106,21 +106,37 @@ class OracleConnector:
             text = "\n".join(str(r[0]) for r in cur.fetchall())
             return replace(plan, text=text)
 
-    def table_info(self, table: str) -> TableInfo:
-        schema, name = parse_table_name(table)
-        with self._session(self.profile.guard.timeout_seconds) as s:
+    def table_info(self, table: str, timeout_seconds: int | None = None) -> TableInfo:
+        """Cột, index và NUM_ROWS của bảng/view.
+
+        Định danh như Oracle: không nháy -> viết hoa; có nháy kép -> giữ đúng hoa thường.
+        Không có schema thì tra trong CURRENT_SCHEMA. Không thấy thì đi qua synonym một cấp
+        (synonym riêng của owner trước, rồi PUBLIC nếu không ghi schema; bỏ qua db_link).
+        View không có NUM_ROWS -> estimated_rows None.
+        """
+        schema_part, (name, name_quoted) = parse_table_ref(table)
+        t = name if name_quoted else name.upper()
+        with self._session(timeout_seconds or self.profile.guard.timeout_seconds) as s:
             cur = s.cursor
-            if schema:
-                owner = schema.upper()
+            if schema_part is not None:
+                owner = schema_part[0] if schema_part[1] else schema_part[0].upper()
             else:
                 cur.execute("SELECT SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA') FROM dual")
                 owner = cur.fetchone()[0]
-            b = {"owner": owner, "t": name.upper()}
-            cur.execute("SELECT column_name, data_type, nullable FROM all_tab_columns "
-                        "WHERE owner = :owner AND table_name = :t ORDER BY column_id", b)
-            cols = [ColumnInfo(r[0], r[1], r[2] == "Y") for r in cur.fetchall()]
+            cols = self._columns(cur, owner, t)
+            if not cols:
+                cur.execute("SELECT table_owner, table_name FROM all_synonyms "
+                            "WHERE synonym_name = :t AND db_link IS NULL "
+                            "AND (owner = :owner OR (:pub = 1 AND owner = 'PUBLIC')) "
+                            "ORDER BY CASE WHEN owner = 'PUBLIC' THEN 1 ELSE 0 END",
+                            {"owner": owner, "t": t, "pub": 0 if schema_part is not None else 1})
+                target = cur.fetchone()
+                if target:
+                    owner, t = target[0], target[1]
+                    cols = self._columns(cur, owner, t)
             if not cols:
                 raise TableNotFound(f"Không tìm thấy bảng '{table}'")
+            b = {"owner": owner, "t": t}
             cur.execute("SELECT i.index_name, i.uniqueness, c.column_name "
                         "FROM all_indexes i JOIN all_ind_columns c "
                         "ON c.index_owner = i.owner AND c.index_name = i.index_name "
@@ -134,3 +150,10 @@ class OracleConnector:
             row = cur.fetchone()
             est = int(row[0]) if row and row[0] is not None else None
             return TableInfo(cols, list(idx.values()), est)
+
+    @staticmethod
+    def _columns(cur, owner: str, t: str) -> list[ColumnInfo]:
+        cur.execute("SELECT column_name, data_type, nullable FROM all_tab_columns "
+                    "WHERE owner = :owner AND table_name = :t ORDER BY column_id",
+                    {"owner": owner, "t": t})
+        return [ColumnInfo(r[0], r[1], r[2] == "Y") for r in cur.fetchall()]

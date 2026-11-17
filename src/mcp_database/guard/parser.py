@@ -8,6 +8,7 @@ ghi/khóa/gọi hàm có tác dụng phụ đều bị chặn bằng `QueryRejec
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import NamedTuple
 
 import sqlglot
 from sqlglot import exp
@@ -165,12 +166,26 @@ class QueryRejected(Exception):
         self.hint = hint
 
 
+class TableRef(NamedTuple):
+    """Tham chiếu bảng đúng như người dùng viết (giữ hoa thường và thông tin nháy).
+
+    Dùng để tra thống kê trên DB: Oracle phân biệt định danh có nháy / không nháy,
+    còn tên chuẩn hóa (`norm`) mất cả schema lẫn cách viết.
+    """
+
+    schema: str | None
+    name: str
+    schema_quoted: bool = False
+    name_quoted: bool = False
+
+
 @dataclass(frozen=True)
 class ParsedQuery:
     expression: exp.Expression
     dialect: str
     sql: str
-    tables: tuple[str, ...]
+    tables: tuple[str, ...]  # tên đã norm (không schema, viết hoa) cho policy/masking
+    table_refs: tuple[TableRef, ...] = ()  # như đã viết, bỏ CTE, không trùng, theo thứ tự
 
 
 def parse_select(sql: str, db_type: str) -> ParsedQuery:
@@ -208,7 +223,8 @@ def parse_select(sql: str, db_type: str) -> ParsedQuery:
         hint.pop()
 
     out_sql = generate(root, dialect)
-    return ParsedQuery(expression=root, dialect=dialect, sql=out_sql, tables=_real_tables(root))
+    return ParsedQuery(expression=root, dialect=dialect, sql=out_sql, tables=_real_tables(root),
+                       table_refs=_table_refs(root))
 
 
 def generate(expression: exp.Expression, dialect: str) -> str:
@@ -322,6 +338,24 @@ def _real_tables(root: exp.Expression) -> tuple[str, ...]:
         if not table.name or is_cte_ref(table):
             continue
         seen.setdefault(norm(table.name), None)
+    return tuple(seen)
+
+
+def _table_refs(root: exp.Expression) -> tuple[TableRef, ...]:
+    seen: dict[TableRef, None] = {}
+    for table in root.find_all(exp.Table, bfs=False):
+        if not table.name or is_cte_ref(table) or table.args.get("catalog") is not None:
+            continue
+        this, db = table.args.get("this"), table.args.get("db")
+        if not isinstance(this, exp.Identifier) or (db is not None and not isinstance(db, exp.Identifier)):
+            continue
+        ref = TableRef(
+            schema=db.name if db is not None else None,
+            name=this.name,
+            schema_quoted=bool(db is not None and db.quoted),
+            name_quoted=bool(this.quoted),
+        )
+        seen.setdefault(ref, None)
     return tuple(seen)
 
 

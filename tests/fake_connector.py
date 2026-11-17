@@ -2,27 +2,40 @@
 
 Khác với `fakes.py` (driver DB-API giả để test chính connector): lớp này đứng
 thay cả connector, ghi lại SQL được gửi xuống để test kiểm tra.
+
+`table_info` cố ý NGHIÊM NGẶT: không chuẩn hóa tên. Bảng chỉ được tìm thấy khi
+chuỗi truyền vào khớp đúng (schema, tên) đã đăng ký, phân biệt hoa thường, giữ
+nguyên dấu nháy. Nhờ vậy lỗi "tra thống kê bằng tên đã chuẩn hóa" không thể bị
+fake che đi như trước.
 """
 from __future__ import annotations
 
 from typing import Callable
 
 from mcp_database.db.base import PlanSummary, QueryResult, TableInfo, TableNotFound
-from mcp_database.names import norm
+
+
+def _key(table: str | tuple) -> tuple[str | None, str]:
+    if isinstance(table, tuple):
+        return table
+    schema, dot, name = table.rpartition(".")
+    return (schema if dot else None), name
 
 
 class FakeConnector:
     def __init__(
         self,
-        tables: dict[str, TableInfo] | None = None,
+        tables: dict | None = None,
         plan: PlanSummary | None = None,
         result: QueryResult | None = None,
     ):
-        # Tên bảng được chuẩn hóa bằng `norm`; bảng không có trong đây -> TableNotFound.
-        self.tables = {norm(k): v for k, v in (tables or {}).items()}
+        # Khóa: (schema hoặc None, tên) hoặc chuỗi "schema.tên" / "tên", đúng như sẽ được tra.
+        self.tables: dict[tuple[str | None, str], TableInfo] = {
+            _key(k): v for k, v in (tables or {}).items()}
         self.plan = plan or PlanSummary(cost=10, est_rows=10, full_scans=[], text="PLAN")
         self.result = result or QueryResult(columns=["X"], rows=[(1,)], truncated=False)
         self.table_info_calls: list[str] = []
+        self.table_info_timeouts: list[int | None] = []
         self.explained_sql: list[str] = []
         self.executed_sql: list[str] = []
         self.execute_args: list[tuple[str, int, int]] = []
@@ -33,11 +46,15 @@ class FakeConnector:
         # Gọi trong execute trước khi trả kết quả (vd. chặn luồng để test đồng thời).
         self.on_execute: Callable[[], None] | None = None
 
-    def table_info(self, table: str) -> TableInfo:
+    def register(self, table: str | tuple, info: TableInfo) -> None:
+        self.tables[_key(table)] = info
+
+    def table_info(self, table: str, timeout_seconds: int | None = None) -> TableInfo:
         self.table_info_calls.append(table)
+        self.table_info_timeouts.append(timeout_seconds)
         if self.table_info_error is not None:
             raise self.table_info_error
-        info = self.tables.get(norm(table))
+        info = self.tables.get(_key(table))
         if info is None:
             raise TableNotFound(f"Không tìm thấy bảng {table}")
         return info

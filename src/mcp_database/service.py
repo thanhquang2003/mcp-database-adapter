@@ -43,17 +43,23 @@ from .db.base import (
     TableNotFound,
 )
 from .db.base import QueryRejected as DbQueryRejected
-from .guard.parser import HINT_SELECT_ONLY, ParsedQuery, parse_select
+from .guard.parser import HINT_SELECT_ONLY, ParsedQuery, TableRef, parse_select
 from .guard.parser import QueryRejected as GuardRejected
 from .guard.plan import check_plan
 from .guard.policy import apply_row_limit, enforce_time_range, large_tables
 from .masking import apply_masking, plan_masking
+from .names import norm
 
 MAX_SQL_CHARS = 20_000
 AUDIT_SQL_CHARS = 2000
 GENERIC_ERROR = "Lỗi không mong đợi khi xử lý truy vấn"
 BUSY_REASON = "hệ thống đang bận"
 BUSY_HINT = "thử lại sau"
+# Cache thống kê số dòng: kết quả có số giữ lâu, kết quả lỗi/không tìm thấy giữ ngắn để
+# một lần tra hỏng không làm mỗi query đều phải mở kết nối mới tới DB.
+STATS_TTL_SECONDS = 300.0
+STATS_NEGATIVE_TTL_SECONDS = 30.0
+STATS_TIMEOUT_SECONDS = 5
 # Cùng dạng mã lỗi mà db.base chấp nhận (ORA-01555, ...) hoặc số nguyên (MariaDB).
 _ERROR_CODE = re.compile(r"[A-Z]{2,4}-\d{1,6}")
 
@@ -98,6 +104,7 @@ class QueryService:
         connector_factory: Callable[[SystemProfile], Connector] = make_connector,
         hmac_key: bytes | None = None,
         today: Callable[[], date] = date.today,
+        clock: Callable[[], float] = time.monotonic,
     ):
         self._config = config
         self._factory = connector_factory
@@ -109,6 +116,10 @@ class QueryService:
         }
         self._connectors: dict[str, Connector] = {}
         self._connectors_lock = threading.Lock()
+        self._clock = clock
+        # (system, schema như đã viết | None, tên như đã viết) -> (hết hạn lúc, số dòng | None)
+        self._stats: dict[tuple[str, str | None, str], tuple[float, int | None]] = {}
+        self._stats_lock = threading.Lock()
 
     def __repr__(self) -> str:
         return f"QueryService(systems={list(self._config.systems)})"
@@ -207,12 +218,41 @@ class QueryService:
     def _gate(self, profile: SystemProfile, connector: Connector, parsed: ParsedQuery, state: _State) -> None:
         """Các bước cần DB; gọi khi đang giữ slot. Kết thúc với state.sql là SQL được phép chạy."""
         guard = profile.guard
-        stats = {table: _estimated_rows(connector, table) for table in parsed.tables}
+        stats: dict[str, int | None] = {}
+        for ref in parsed.table_refs:
+            rows = self._estimated_rows(profile, connector, ref)
+            key = norm(ref.name)
+            # Cùng tên ở hai schema: lấy số lớn hơn (thận trọng).
+            if rows is not None and (stats.get(key) is None or rows > stats[key]):
+                stats[key] = rows
+            else:
+                stats.setdefault(key, None)
         large = large_tables(parsed, guard, stats)
         enforce_time_range(parsed, guard, large, self._today())
         state.sql = apply_row_limit(parsed, guard.max_rows + 1)
         state.plan = connector.explain(parsed.sql)
         check_plan(state.plan, guard, large)
+
+    def _estimated_rows(self, profile: SystemProfile, connector: Connector, ref: TableRef) -> int | None:
+        """Số dòng ước lượng của bảng, tra theo tham chiếu đúng như đã viết, có cache.
+
+        Lỗi thống kê không làm hỏng query: coi như không biết (cổng EXPLAIN bắt phần còn lại).
+        """
+        key = (profile.name, ref.schema, ref.name)
+        now = self._clock()
+        with self._stats_lock:
+            hit = self._stats.get(key)
+            if hit is not None and hit[0] > now:
+                return hit[1]
+        timeout = min(profile.guard.timeout_seconds, STATS_TIMEOUT_SECONDS)
+        try:
+            rows = connector.table_info(_ref_text(ref, profile.db_type), timeout_seconds=timeout).estimated_rows
+        except (TableNotFound, DatabaseError, TimeoutError):
+            rows = None
+        ttl = STATS_TTL_SECONDS if rows is not None else STATS_NEGATIVE_TTL_SECONDS
+        with self._stats_lock:
+            self._stats[key] = (self._clock() + ttl, rows)
+        return rows
 
     # --- Hạ tầng -------------------------------------------------------------
 
@@ -242,12 +282,16 @@ class QueryService:
             slot.release()
 
 
-def _estimated_rows(connector: Connector, table: str) -> int | None:
-    """Lỗi thống kê không làm hỏng query: coi như không biết (cổng EXPLAIN bắt phần còn lại)."""
-    try:
-        return connector.table_info(table).estimated_rows
-    except (TableNotFound, DatabaseError, TimeoutError):
-        return None
+def _ref_text(ref: TableRef, db_type: str) -> str:
+    """Chuỗi `schema.bảng` đưa cho connector.table_info, giữ nguyên cách viết.
+
+    Oracle: phần có nháy giữ dấu nháy kép (tra đúng hoa thường), phần không nháy để
+    nguyên (connector tự viết hoa). MariaDB: bỏ nháy, connector so không phân biệt hoa thường.
+    """
+    def part(text: str, quoted: bool) -> str:
+        return f'"{text}"' if quoted and db_type == "oracle" else text
+    name = part(ref.name, ref.name_quoted)
+    return name if ref.schema is None else f"{part(ref.schema, ref.schema_quoted)}.{name}"
 
 
 def _safe_code(code: object) -> str | int | None:
