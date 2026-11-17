@@ -261,17 +261,34 @@ class QueryService:
             rows = connector.table_info(ref_text, timeout_seconds=timeout).estimated_rows
         except (TableNotFound, DatabaseError, TimeoutError):
             rows = None
-        ttl = STATS_TTL_SECONDS if rows is not None else STATS_NEGATIVE_TTL_SECONDS
+        return self._store_stats(key, rows)
+
+    def _store_stats(self, key: tuple[str, str], rows: int | None) -> int | None:
+        """Ghi kết quả tra vào cache (kiểm tra-và-ghi dưới khóa); trả số dòng để dùng.
+
+        Không bao giờ hạ cấp một ước lượng đã biết (sai về phía cho qua bảng lớn):
+        - Tra lỗi/không thấy (None) mà đã có số (kể cả đã hết hạn, hoặc do luồng khác vừa
+          ghi): giữ số đó, chỉ gia hạn tối đa thêm TTL ngắn của lỗi.
+        - Hai số dương trong cùng cửa sổ TTL (tra đồng thời): giữ số lớn hơn. Hết hạn thì số
+          mới thay hẳn, để bảng thật sự nhỏ đi vẫn được cập nhật.
+        """
         with self._stats_lock:
             now = self._clock()
-            self._stats.pop(key, None)  # ghi lại thì xếp cuối (mới nhất)
+            old = self._stats.pop(key, None)  # ghi lại thì xếp cuối (mới nhất)
+            if rows is None and old is not None and old[1] is not None:
+                entry = (max(old[0], now + STATS_NEGATIVE_TTL_SECONDS), old[1])
+            elif rows is not None and old is not None and old[1] is not None and old[0] > now:
+                entry = (now + STATS_TTL_SECONDS, max(old[1], rows))
+            else:
+                ttl = STATS_TTL_SECONDS if rows is not None else STATS_NEGATIVE_TTL_SECONDS
+                entry = (now + ttl, rows)
             if len(self._stats) >= STATS_CACHE_MAX:
                 for k in [k for k, (expires, _) in self._stats.items() if expires <= now]:
                     del self._stats[k]
             while len(self._stats) >= STATS_CACHE_MAX:
                 del self._stats[next(iter(self._stats))]  # dict giữ thứ tự chèn: cũ nhất trước
-            self._stats[key] = (now + ttl, rows)
-        return rows
+            self._stats[key] = entry
+            return entry[1]
 
     # --- Hạ tầng -------------------------------------------------------------
 

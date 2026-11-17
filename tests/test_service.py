@@ -744,3 +744,78 @@ def test_unknown_system_name_capped(build, audit_path):
         with pytest.raises(LookupError) as e:
             call()
         assert "Z" * 101 not in str(e.value) and "Z" * 100 in str(e.value)
+
+
+# --- Lỗi tra thống kê không được hạ cấp ước lượng đã có --------------------------
+
+
+def test_failed_relookup_after_expiry_keeps_large(clocked):
+    clock = Clock()
+    fake = FakeConnector(tables={("billing", "huge"): info(40_000_000)})
+    svc = clocked(fake, clock)
+    with pytest.raises(QueryRejected):
+        svc.run("cdr", "SELECT COUNT(*) FROM billing.huge")
+    clock.now += 301  # mục dương đã hết hạn
+    fake.table_info_error = DatabaseError(1234)
+    with pytest.raises(QueryRejected) as e:
+        svc.run("cdr", "SELECT COUNT(*) FROM billing.huge")
+    assert "HUGE" in e.value.reason
+    clock.now += 10
+    with pytest.raises(QueryRejected):
+        svc.run("cdr", "SELECT COUNT(*) FROM billing.huge")
+    assert len(fake.table_info_calls) == 2  # lần cuối lấy từ cache, vẫn là 40M
+
+
+def test_concurrent_failed_lookup_written_last_does_not_demote(clocked):
+    # A (thành công, 40M) và B (lỗi) tra cùng lúc; B ghi cache sau cùng.
+    clock = Clock()
+    fake = FakeConnector(tables={("billing", "huge"): info(40_000_000)})
+    svc = clocked(fake, clock)
+    a_done, b_may_finish, b_in_lookup = threading.Event(), threading.Event(), threading.Event()
+    original = fake.table_info
+
+    def table_info(table, timeout_seconds=None):
+        if threading.current_thread().name == "B":
+            b_in_lookup.set()
+            b_may_finish.wait(5)
+            raise DatabaseError(1234)
+        return original(table, timeout_seconds)
+    fake.table_info = table_info
+    errors = {}
+
+    def worker(name):
+        try:
+            svc.run("cdr", "SELECT COUNT(*) FROM billing.huge")
+        except QueryRejected as exc:
+            errors[name] = exc
+        finally:
+            if name == "A":
+                a_done.set()
+
+    b = threading.Thread(target=worker, args=("B",), name="B")
+    b.start()
+    assert b_in_lookup.wait(5)  # B đã trượt cache và đang tra
+    a = threading.Thread(target=worker, args=("A",), name="A")
+    a.start()
+    a_done.wait(5)
+    b_may_finish.set()
+    a.join(5)
+    b.join(5)
+    assert "A" in errors and "B" in errors  # B dùng giá trị đã gộp, cũng bị từ chối
+    assert len(fake.table_info_calls) == 1  # chỉ A ghi nhận (B bị thay bằng hàm chặn)
+    clock.now += 5
+    with pytest.raises(QueryRejected):
+        svc.run("cdr", "SELECT COUNT(*) FROM billing.huge")
+
+
+def test_positive_estimates_merge_by_max_within_ttl(build):
+    clock = Clock()
+    svc, _ = build()
+    svc._clock = clock
+    key = ("cdr", "t")
+    assert svc._store_stats(key, 100) == 100
+    assert svc._store_stats(key, 40_000_000) == 40_000_000
+    assert svc._store_stats(key, 100) == 40_000_000  # cũ hơn/nhỏ hơn không đè trong TTL
+    assert svc._store_stats(key, None) == 40_000_000
+    clock.now += 1000                                 # hết hạn: số mới (nhỏ hơn) được nhận
+    assert svc._store_stats(key, 100) == 100
