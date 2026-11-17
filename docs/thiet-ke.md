@@ -1,6 +1,6 @@
 # MCP Database dùng chung — thiết kế
 
-Ngày: 2026-11-17 · Trạng thái: chờ duyệt
+Ngày: 2026-11-17 · Trạng thái: đã triển khai (xem README.md; một số chi tiết đã đổi trong quá trình làm, README là bản chuẩn)
 
 ## Mục đích
 
