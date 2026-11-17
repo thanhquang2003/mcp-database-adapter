@@ -269,6 +269,8 @@ def test_run_query_database_error_is_sanitized(build, fake):
     out = call(server, "run_query", system="cdr", sql="SELECT id FROM users")
     assert out["error"] == "Lỗi từ cơ sở dữ liệu (mã ORA-00904)"
     assert "84912345678" not in json.dumps(out)
+    # gợi ý trung tính: lỗi DB có thể là lỗi kết nối, không chỉ lỗi cú pháp
+    assert "cú pháp" not in out["hint"]
 
 
 def test_run_query_unexpected_error_is_generic(build, fake):
@@ -581,3 +583,4 @@ def test_stdio_protocol_smoke(tmp_path):
     assert result.structured_content["result"] == [{"name": "cdr", "db_type": "oracle"},
                                                     {"name": "shop", "db_type": "mariadb"}]
     assert time.monotonic() - started < 30
+    assert "Traceback" not in (tmp_path / "stderr.log").read_text(encoding="utf-8")

@@ -74,6 +74,7 @@ def _typed(value: Any, typ: type, key: str, ctx: str) -> Any:
     return value
 
 
+TOP_LEVEL_KEYS = ("audit_log", "systems")
 SYSTEM_KEYS = ("db_type", "host", "port", "database", "user_env", "password_env",
                "data_doc", "is_replica", "allow_primary", "guard")
 GUARD_KEYS = ("max_rows", "timeout_seconds", "max_concurrent", "large_table_rows",
@@ -193,6 +194,11 @@ def load_config(path: Path) -> Config:
         raise ConfigError(f"File cấu hình {path} không phải YAML hợp lệ: {e}") from e
     if not isinstance(data, dict):
         raise ConfigError("File cấu hình phải là mapping ở cấp cao nhất")
+    for k in data:
+        if k not in TOP_LEVEL_KEYS:
+            raise ConfigError(
+                f"Khóa lạ '{k}' ở cấp cao nhất của file cấu hình; "
+                f"chỉ chấp nhận: {', '.join(TOP_LEVEL_KEYS)}")
     base = path.resolve().parent
     systems_raw = data.get("systems")
     if not isinstance(systems_raw, dict) or not systems_raw:

@@ -84,3 +84,61 @@ def test_blob_uses_size_without_reading():
         def size(self):
             return 123456
     assert normalize_cell(Blob()) == "<binary 123456 bytes>"
+
+
+# --- Fix wave E: giá trị kiểu lạ ------------------------------------------------
+
+
+def test_unknown_types_become_bounded_strings():
+    import array
+
+    class DbObject:
+        def __str__(self):
+            return "<oracledb.DbObject APP.T_TYPE>"
+
+    class Big:
+        def __str__(self):
+            return "y" * 10_000
+
+    class Broken:
+        def __str__(self):
+            raise RuntimeError("SECRET")
+
+    assert normalize_cell(DbObject()) == "<oracledb.DbObject APP.T_TYPE>"
+    assert normalize_cell(array.array("f", [1.0])) == "array('f', [1.0])"
+    out = normalize_cell(Big())
+    assert isinstance(out, str) and len(out) <= 2010 and out.endswith("…[cắt]")
+    assert normalize_cell(Broken()) == "<unserializable>"
+    assert normalize_cell({"b", }) == "{'b'}"
+    # kiểu thường giữ nguyên
+    assert normalize_cell(5) == 5 and normalize_cell(True) is True and normalize_cell(1.5) == 1.5
+    assert normalize_cell("x") == "x"
+
+
+def test_interval_ym_and_tuple_become_string():
+    import oracledb
+    v = oracledb.IntervalYM(years=1, months=2)
+    out = normalize_cell(v)
+    assert isinstance(out, str) and "1" in out and "2" in out
+
+
+def _bfile(size):
+    class T:
+        name = "DB_TYPE_BFILE"
+
+    class Bfile:
+        type = T()
+
+        def read(self, *a):
+            raise AssertionError("không được đọc BFILE")
+
+        def size(self):
+            if size is None:
+                raise RuntimeError("SECRET-PATH /u01/x")
+            return size
+    return Bfile()
+
+
+def test_bfile_reported_by_size_or_placeholder():
+    assert normalize_cell(_bfile(77)) == "<bfile 77 bytes>"
+    assert normalize_cell(_bfile(None)) == "<bfile>"

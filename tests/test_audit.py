@@ -56,3 +56,26 @@ def test_concurrent_writes_do_not_interleave(tmp_path):
     for t in threads:
         t.join()
     assert len(lines(path)) == 400
+
+
+def test_new_file_created_owner_only(tmp_path):
+    import os
+    import stat
+    old = os.umask(0)  # kể cả khi umask cho phép mọi người đọc
+    try:
+        path = tmp_path / "audit.jsonl"
+        AuditLog(path).write({"n": 1})
+    finally:
+        os.umask(old)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert [e["n"] for e in lines(path)] == [1]
+
+
+def test_existing_file_mode_untouched(tmp_path):
+    import os
+    import stat
+    path = tmp_path / "audit.jsonl"
+    path.write_text("", encoding="utf-8")
+    os.chmod(path, 0o640)
+    AuditLog(path).write({"n": 1})
+    assert stat.S_IMODE(path.stat().st_mode) == 0o640

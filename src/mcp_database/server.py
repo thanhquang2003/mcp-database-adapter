@@ -4,7 +4,9 @@ Kết quả tool đi thẳng vào model nên đây là ranh giới bảo mật:
 - Tool không bao giờ ném ngoại lệ ra tầng MCP; lỗi được trả thành
   `{"error": ..., "hint": ...}` với thông điệp đã kiểm soát (lý do của cổng
   kiểm tra, `str()` của các lớp lỗi do dự án tự tạo, hoặc chuỗi cố định).
-- Không trả host, port, user, tên biến môi trường hay đường dẫn trên máy chủ.
+- Không trả host, port, user, mật khẩu hay đường dẫn trên máy chủ. Ngoại lệ duy nhất:
+  khi thiếu thông tin đăng nhập, MissingCredentialError nêu TÊN biến môi trường cần
+  đặt (để quản trị biết sửa gì), không bao giờ nêu giá trị của biến.
 - stdout là kênh giao thức MCP: mọi chẩn đoán đi ra stderr.
 """
 from __future__ import annotations
@@ -51,7 +53,8 @@ _HINT_SYSTEMS = "Gọi list_systems để xem tên hệ thống hợp lệ."
 _HINT_TABLE = "Kiểm tra tên bảng trong get_data_doc; dùng dạng 'bảng' hoặc 'schema.bảng'."
 _HINT_TIMEOUT = ("Thu hẹp khoảng thời gian, lọc theo cột có chỉ mục, hoặc dùng truy vấn tổng hợp "
                  "(GROUP BY, COUNT).")
-_HINT_DB = "Kiểm tra lại cú pháp, tên bảng/cột theo get_data_doc và describe_table."
+_HINT_DB = ("DB trả lỗi (có thể do câu truy vấn, quyền truy cập hoặc kết nối). Đối chiếu tên bảng/cột "
+            "với get_data_doc/describe_table rồi thử lại; nếu vẫn lỗi, báo người quản trị kèm mã lỗi.")
 _HINT_CREDS = "Báo người quản trị cấu hình biến môi trường kết nối cho hệ thống này."
 _HINT_GUARD = "Sửa truy vấn theo lý do ở trên rồi thử lại."
 _HINT_GENERIC = "Thử lại; nếu vẫn lỗi, báo người quản trị kiểm tra log của server."

@@ -637,3 +637,46 @@ def test_masking_column_mismatch_fails_closed(build, fake, audit_path):
         svc.run("cdr", HAPPY)
     assert "84912345678" not in str(e.value)
     assert last_event(audit_path)["status"] == "error"
+
+
+# --- Fix wave E: ngoại lệ công khai không mang ngoại lệ lạ -----------------------
+
+
+class _Secret(Exception):
+    pass
+
+
+@pytest.mark.parametrize("error", [
+    TimeoutError("SECRET-T"),
+    QueryTimeout(99),
+    DatabaseError(1234),
+    _Secret("SECRET-X"),
+])
+def test_public_exceptions_have_no_cause_or_context(build, fake, error):
+    if isinstance(error, (QueryTimeout, DatabaseError)):
+        error.__cause__ = _Secret("SECRET-DRIVER-TEXT")
+    fake.execute_error = error
+    svc, _ = build()
+    with pytest.raises(Exception) as ei:
+        svc.run("cdr", SAFE)
+    exc = ei.value
+    assert exc is not error
+    assert exc.__cause__ is None and exc.__context__ is None
+    assert "SECRET" not in str(exc)
+    if isinstance(error, TimeoutError):
+        assert type(exc) is QueryTimeout and str(exc) == str(QueryTimeout(30))
+
+
+def test_table_info_public_exception_has_no_context(build, fake):
+    fake.table_info_error = _Secret("SECRET-X")
+    svc, _ = build()
+    with pytest.raises(Exception) as ei:
+        svc.table_info("cdr", "users")
+    assert ei.value.__cause__ is None and ei.value.__context__ is None
+
+
+def test_audit_system_field_truncated(build, audit_path):
+    svc, _ = build()
+    with pytest.raises(LookupError):
+        svc.run("x" * 5000, SAFE)
+    assert len(last_event(audit_path)["system"]) == 100

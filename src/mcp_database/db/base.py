@@ -169,12 +169,22 @@ def sanitize_errors(timeout_codes: frozenset, timeout_seconds: int,
 
 
 def _normalize_lob(lob: Any) -> object:
-    """Đọc có giới hạn: BLOB chỉ lấy kích thước, CLOB đọc tối đa MAX_CELL_CHARS + 1 ký tự."""
+    """Đọc có giới hạn: BLOB/BFILE chỉ lấy kích thước, CLOB đọc tối đa MAX_CELL_CHARS + 1 ký tự."""
     type_name = getattr(getattr(lob, "type", None), "name", "")
+    if type_name == "DB_TYPE_BFILE":
+        # BFILE trỏ ra file trên máy chủ DB: không đọc nội dung, không lộ đường dẫn.
+        try:
+            return f"<bfile {int(lob.size())} bytes>"
+        except Exception:
+            return "<bfile>"
     if type_name == "DB_TYPE_BLOB" and hasattr(lob, "size"):
         return f"<binary {lob.size()} bytes>"
     data = lob.read(1, MAX_CELL_CHARS + 1)
     return normalize_cell(data)
+
+
+def _cap(text: str) -> str:
+    return text[:MAX_CELL_CHARS] + "…[cắt]" if len(text) > MAX_CELL_CHARS else text
 
 
 def normalize_cell(value: object) -> object:
@@ -194,9 +204,15 @@ def normalize_cell(value: object) -> object:
         return str(value)
     if hasattr(value, "read"):
         return _normalize_lob(value)
-    if isinstance(value, str) and len(value) > MAX_CELL_CHARS:
-        return value[:MAX_CELL_CHARS] + "…[cắt]"
-    return value
+    if isinstance(value, str):
+        return _cap(value)
+    if type(value) in (int, float, bool):
+        return value
+    # Kiểu lạ (oracledb DbObject, IntervalYM, array.array, set của PyMySQL...): chuỗi có giới hạn.
+    try:
+        return _cap(str(value))
+    except Exception:
+        return "<unserializable>"
 
 
 def close_quietly(conn, cursor=None) -> None:

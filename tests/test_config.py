@@ -132,3 +132,10 @@ def test_max_range_days_positive(tmp_path):
 def test_port_range(tmp_path, port):
     with pytest.raises(ConfigError, match="port"):
         load_config(write_yaml(tmp_path, variant("port: 1521", f"port: {port}")))
+
+
+def test_unknown_top_level_key_rejected(tmp_path):
+    with pytest.raises(ConfigError) as e:
+        load_config(write_yaml(tmp_path, variant("audit_log: audit.jsonl", "audit_logs: audit.jsonl")))
+    msg = str(e.value)
+    assert "audit_logs" in msg and "audit_log" in msg and "systems" in msg

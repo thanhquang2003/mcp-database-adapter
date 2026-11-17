@@ -52,6 +52,7 @@ from .names import norm
 
 MAX_SQL_CHARS = 20_000
 AUDIT_SQL_CHARS = 2000
+AUDIT_SYSTEM_CHARS = 100
 GENERIC_ERROR = "Lỗi không mong đợi khi xử lý truy vấn"
 BUSY_REASON = "hệ thống đang bận"
 BUSY_HINT = "thử lại sau"
@@ -144,8 +145,9 @@ class QueryService:
     def run(self, system: str, sql: str) -> RunResult:
         """Chạy query đã qua kiểm tra. Mọi lần gọi đều ghi đúng một sự kiện audit."""
         start = time.monotonic()
-        event: dict = {"system": system, "sql": sql[:AUDIT_SQL_CHARS], "status": "error",
-                       "reason": None, "elapsed_ms": None, "row_count": None}
+        event: dict = {"system": system[:AUDIT_SYSTEM_CHARS], "sql": sql[:AUDIT_SQL_CHARS],
+                       "status": "error", "reason": None, "elapsed_ms": None, "row_count": None}
+        public: Exception | None = None
         try:
             result = self._run(system, sql)
         except Exception as exc:
@@ -154,7 +156,6 @@ class QueryService:
             event.update(status=status, reason=_reason(public), **extra)
             if public is exc:
                 raise
-            raise public from None
         else:
             event.update(status="ok", row_count=result.row_count)
             result.elapsed_ms = _elapsed_ms(start)
@@ -162,6 +163,8 @@ class QueryService:
         finally:
             event["elapsed_ms"] = _elapsed_ms(start)
             self._audit.write(event)
+        # Ném ngoài khối except: ngoại lệ dựng lại không mang __context__ trỏ về lỗi gốc.
+        raise _detached(public)
 
     def table_info(self, system: str, table: str) -> TableInfo:
         profile = self._profile(system)
@@ -173,7 +176,7 @@ class QueryService:
             _, public, _ = _classify(exc, profile.guard.timeout_seconds)
             if public is exc:
                 raise
-            raise public from None
+        raise _detached(public)
 
     # --- Các bước pipeline ---------------------------------------------------
 
@@ -313,14 +316,22 @@ def _classify(exc: Exception, timeout_seconds: int | None) -> tuple[str, Excepti
     if isinstance(exc, DbQueryRejected):
         return "rejected", GuardRejected(str(DbQueryRejected()), HINT_SELECT_ONLY), {}
     if isinstance(exc, TimeoutError):
-        public = exc if type(exc) is QueryTimeout else QueryTimeout(timeout_seconds or 0)
-        return "timeout", public, {"error_type": type(exc).__name__}
+        # Luôn dựng lại: QueryTimeout của connector mang lỗi driver ở __cause__.
+        return "timeout", QueryTimeout(timeout_seconds or 0), {"error_type": type(exc).__name__}
     if isinstance(exc, DatabaseError):
         code = _safe_code(exc.code)
         return "error", DatabaseError(code), {"error_type": type(exc).__name__, "code": code}
     if type(exc) in (UnknownSystem, TableNotFound, MissingCredentialError):
         return "error", exc, {"error_type": type(exc).__name__}
     return "error", RuntimeError(GENERIC_ERROR), {"error_type": type(exc).__name__}
+
+
+def _detached(exc: Exception) -> Exception:
+    """Cắt mọi liên kết tới ngoại lệ gốc (có thể chứa văn bản lỗi của driver)."""
+    exc.__cause__ = None
+    exc.__context__ = None
+    exc.__suppress_context__ = True
+    return exc
 
 
 def _reason(exc: Exception) -> str:
