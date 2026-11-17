@@ -37,6 +37,8 @@ BILLING_DB_USER=... BILLING_DB_PASS=... CRM_DB_USER=... CRM_DB_PASS=... \
 .venv/bin/python -m mcp_database
 ```
 
+Lệnh `.venv/bin/mcp-database` (cài cùng package) tương đương `python -m mcp_database`.
+
 Mỗi lần gọi mở một kết nối mới và đóng ngay sau đó; chưa có connection pool.
 
 Các thư viện chính được ghim khoảng phiên bản trong `pyproject.toml` (`sqlglot>=30.32.0,<30.33`, `mcp>=2.3.0,<2.4`, `oracledb<27`, `PyMySQL<2`). Lý do: lớp kiểm tra SQL dựa vào cấu trúc cây cú pháp bên trong của sqlglot, và các phiên bản khác nhau có thể sinh lại SQL khác đi hoặc đặt tên node khác. Muốn nâng phiên bản thì làm có chủ ý: sửa cận trên, chạy lại cả bộ test (`pytest -m "not integration"`) và, nếu được, test MariaDB thật rồi mới triển khai.

@@ -23,8 +23,8 @@ from typing import Any, Awaitable, Callable
 
 from mcp.server.mcpserver import MCPServer
 
-from .config import Config, ConfigError, SystemProfile, load_config
-from .db.base import DatabaseError, MissingCredentialError, QueryTimeout, TableNotFound
+from .config import Config, ConfigError, load_config
+from .db.base import TABLE_NAME_RE, DatabaseError, MissingCredentialError, QueryTimeout, TableNotFound
 from .guard.parser import QueryRejected as GuardRejected
 from .names import norm
 from .service import GENERIC_ERROR, QueryService, RunResult, UnknownSystem
@@ -36,7 +36,6 @@ MIN_HMAC_BYTES = 16
 MAX_DOC_CHARS = 200_000
 TOP_N_MIN, TOP_N_MAX = 1, 50
 
-_TABLE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$#]*(\.[A-Za-z_][A-Za-z0-9_$#]*)?$")
 _COLUMN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$#]*$")
 _DATE_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
 
@@ -67,21 +66,28 @@ def _error(message: str, hint: str) -> dict:
     return {"error": message, "hint": hint}
 
 
+# Lớp lỗi do dự án tự tạo (so đúng kiểu, không nhận lớp con) -> gợi ý; str() của chúng
+# được phép đưa cho model.
+_KNOWN_HINTS: dict[type, str] = {
+    UnknownSystem: _HINT_SYSTEMS,
+    TableNotFound: _HINT_TABLE,
+    QueryTimeout: _HINT_TIMEOUT,
+    DatabaseError: _HINT_DB,
+    MissingCredentialError: _HINT_CREDS,
+}
+
+
+def _is_known(exc: Exception) -> bool:
+    return isinstance(exc, GuardRejected) or type(exc) in _KNOWN_HINTS
+
+
 def _error_payload(exc: Exception) -> dict:
     """Chỉ dùng thông điệp do dự án tự tạo; mọi thứ khác thành thông điệp cố định."""
     if isinstance(exc, GuardRejected):
         return _error(exc.reason, exc.hint or _HINT_GUARD)
-    kind = type(exc)
-    if kind is UnknownSystem:
-        return _error(str(exc), _HINT_SYSTEMS)
-    if kind is TableNotFound:
-        return _error(str(exc), _HINT_TABLE)
-    if kind is QueryTimeout:
-        return _error(str(exc), _HINT_TIMEOUT)
-    if kind is DatabaseError:
-        return _error(str(exc), _HINT_DB)
-    if kind is MissingCredentialError:
-        return _error(str(exc), _HINT_CREDS)
+    hint = _KNOWN_HINTS.get(type(exc))
+    if hint is not None:
+        return _error(str(exc), hint)
     return _error(GENERIC_ERROR, _HINT_GENERIC)
 
 
@@ -93,9 +99,7 @@ def _safe(fn: Callable[..., Awaitable[Any]], on_error: Callable[[dict], Any] = l
         try:
             return await fn(*args, **kwargs)
         except Exception as exc:  # noqa: BLE001 - ranh giới bảo mật
-            known = isinstance(exc, GuardRejected) or type(exc) in (
-                UnknownSystem, TableNotFound, QueryTimeout, DatabaseError, MissingCredentialError)
-            if not known:
+            if not _is_known(exc):
                 # Chỉ ghi tên lớp lỗi: nội dung có thể chứa dữ liệu hoặc lỗi gốc của driver.
                 logger.warning("Tool %s gặp lỗi không mong đợi: %s", fn.__name__, type(exc).__name__)
             return on_error(_error_payload(exc))
@@ -188,12 +192,14 @@ def build_server(service: QueryService, config: Config) -> MCPServer:
                     + f"\n\n[Tài liệu đã bị cắt ở {MAX_DOC_CHARS} ký tự; phần sau không được hiển thị.]")
         return text
 
+    safe_get_data_doc = _safe(_get_data_doc, _doc_error)
+
     @mcp.tool()
     async def get_data_doc(system: str) -> str:
         """Đọc tài liệu dữ liệu của hệ thống: ý nghĩa bảng/cột, cột thời gian để lọc, bảng lớn,
         cột nhạy cảm (bị băm/che) và ví dụ truy vấn. LUÔN gọi tool này trước khi viết SQL
         cho một hệ thống."""
-        return await _safe(_get_data_doc, _doc_error)(system)
+        return await safe_get_data_doc(system)
 
     @mcp.tool()
     @_safe
@@ -260,7 +266,7 @@ def build_server(service: QueryService, config: Config) -> MCPServer:
         (time_from <= t < time_to, time_to không bao gồm); bảng lớn bắt buộc có cả hai và
         khoảng không vượt giới hạn số ngày. Không dùng được với cột nhạy cảm.
         Lỗi trả về {"error", "hint"}; làm theo hint rồi thử lại."""
-        if not isinstance(table, str) or not _TABLE_RE.fullmatch(table):
+        if not isinstance(table, str) or not TABLE_NAME_RE.fullmatch(table):
             return _error("Tên bảng không hợp lệ.", "Dùng dạng 'bảng' hoặc 'schema.bảng' (chữ, số, _, $, #).")
         if not isinstance(column, str) or not _COLUMN_RE.fullmatch(column):
             return _error("Tên cột không hợp lệ.",

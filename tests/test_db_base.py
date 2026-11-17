@@ -86,7 +86,7 @@ def test_blob_uses_size_without_reading():
     assert normalize_cell(Blob()) == "<binary 123456 bytes>"
 
 
-# --- Fix wave E: giá trị kiểu lạ ------------------------------------------------
+# --- Giá trị kiểu lạ ------------------------------------------------
 
 
 def test_unknown_types_become_bounded_strings():

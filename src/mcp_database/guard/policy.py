@@ -221,7 +221,7 @@ def _conjuncts(node: exp.Expression) -> Iterator[exp.Expression]:
 
 # Chuỗi ISO trần, CAST('...' AS DATE) và literal DATE/TIMESTAMP được hiểu là
 # YYYY-MM-DD[ HH:MM:SS]. Với Oracle, chuỗi trần/CAST phụ thuộc NLS của phiên:
-# tầng kết nối Oracle (Task 5) phải cố định NLS_DATE_FORMAT/NLS_TIMESTAMP_FORMAT
+# connector Oracle cố định NLS_DATE_FORMAT/NLS_TIMESTAMP_FORMAT
 # theo đúng định dạng này. re.ASCII: \d chỉ khớp 0-9.
 _ISO = re.compile(r"(\d{4}-\d{2}-\d{2})(?: (\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?)?", re.ASCII)
 _TO_DATE_FORMATS = {

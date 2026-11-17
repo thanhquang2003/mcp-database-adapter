@@ -2,7 +2,6 @@ from datetime import date
 from types import MappingProxyType
 
 import pytest
-from sqlglot import exp
 
 from mcp_database.config import Guard, TableGuard
 from mcp_database.guard.parser import QueryRejected, parse_select
@@ -330,7 +329,7 @@ def test_rejection_quotes_bound_in_target_dialect():
     assert "SYSDATE - 7.5" in err.reason
 
 
-# --- Review round 1 ----------------------------------------------------------
+# --- Toán tử trên bảng, mệnh đề bảng, giới hạn dòng ----------------------------------------------------------
 
 TABLE_OPERATORS = [
     (P, "SELECT * FROM cdr_history MATCH_RECOGNIZE (ORDER BY id MEASURES 1 AS x ALL ROWS PER MATCH "
@@ -348,7 +347,7 @@ TABLE_OPERATORS = [
 def test_table_operators_on_large_table_rejected(parse, sql):
     err = rejected(sql, parse=parse)
     if parse is PM:
-        # MariaDB không có PIVOT/UNPIVOT: bị cổng parser từ chối trước (fix wave A).
+        # MariaDB không có PIVOT/UNPIVOT: bị cổng parser từ chối trước (cú pháp không sinh lại được).
         assert "không hỗ trợ" in err.reason
     else:
         assert "subquery/CTE" in err.hint

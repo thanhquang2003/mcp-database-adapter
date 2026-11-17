@@ -187,7 +187,7 @@ def test_apply_masking_known_hmac():
     assert apply_masking([("84912",)], ["hash"], b"k") == [(expected,)]
 
 
-# --- Round 1 review fixes -----------------------------------------------------
+# --- Nguồn không phải bảng, sinh dòng, chuẩn hóa số -----------------------------------------------------
 
 XQUERY_BYPASS = [
     """SELECT COLUMN_VALUE FROM XMLTABLE('fn:collection("oradb:/APP/CDR")')""",

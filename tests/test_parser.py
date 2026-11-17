@@ -365,7 +365,7 @@ def test_mariadb_error_based_extractvalue_rejected():
     assert "EXTRACTVALUE" in err.reason and err.hint
 
 
-# --- Fix wave A: cú pháp sqlglot không sinh lại được thì từ chối ------------------
+# --- Cú pháp sqlglot không sinh lại được thì từ chối ------------------
 
 UNSUPPORTED_MARIADB = [
     "SELECT * FROM t PIVOT (SUM(a) FOR b IN (1, 2))",
@@ -394,7 +394,7 @@ def test_is_cte_ref_public():
     assert callable(parser.is_cte_ref) and not hasattr(parser, "_is_cte_ref")
 
 
-# --- Fix wave C: tham chiếu bảng giữ nguyên cách viết ----------------------------
+# --- Tham chiếu bảng giữ nguyên cách viết ----------------------------
 
 
 def test_table_refs_as_written():

@@ -267,7 +267,7 @@ def test_audit_has_no_row_data(build, audit_path, fake):
     assert "42424242" not in text
 
 
-# --- Thêm: carry-over của controller ------------------------------------------
+# --- Lỗi, khóa băm, giới hạn và tiện ích ------------------------------------------
 
 
 def test_db_query_rejected_is_audited_as_rejected(build, fake, audit_path):
@@ -442,7 +442,7 @@ def test_table_stats_feed_large_table_detection(build, fake):
     assert fake.table_info_calls == ["users"]
 
 
-# --- Fix wave C: tra thống kê theo tham chiếu như đã viết + cache ------------------
+# --- Tra thống kê theo tham chiếu như đã viết + cache ------------------
 
 
 class Clock:
@@ -639,7 +639,7 @@ def test_masking_column_mismatch_fails_closed(build, fake, audit_path):
     assert last_event(audit_path)["status"] == "error"
 
 
-# --- Fix wave E: ngoại lệ công khai không mang ngoại lệ lạ -----------------------
+# --- Ngoại lệ công khai không mang ngoại lệ lạ -----------------------
 
 
 class _Secret(Exception):
@@ -682,7 +682,7 @@ def test_audit_system_field_truncated(build, audit_path):
     assert len(last_event(audit_path)["system"]) == 100
 
 
-# --- Final round: cache không được gộp hai đối tượng khác nhau --------------------
+# --- Cache không được gộp hai đối tượng khác nhau --------------------
 
 # billing.huge (không nháy) = BILLING.HUGE trên Oracle; "billing"."huge" là đối tượng khác.
 BIG_UNQUOTED = ("billing", "huge")
