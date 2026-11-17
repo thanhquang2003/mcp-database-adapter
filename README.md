@@ -8,6 +8,8 @@ Lớp bảo vệ chính là user database chỉ có quyền đọc, kết nối 
 
 Nên tạo user chỉ đọc đúng cách (mục 3) trước khi làm bất cứ việc gì khác.
 
+Hướng dẫn làm theo trình tự (cài đặt, nối Claude Code và Claude Desktop, cách dùng để phân tích, vận hành, xử lý sự cố) nằm ở `docs/huong-dan.md`. File này là tài liệu tra cứu. Thiết kế gốc ở `docs/thiet-ke.md`.
+
 Đường Oracle còn ở mức thử nghiệm (EXPERIMENTAL): mới chạy với test double, chưa chạy trên Oracle thật. Đường MariaDB đã chạy với container thật. Chỉ coi Oracle là dùng được sau khi checklist "Kiểm tra trên replica thật" ở cuối file này đạt.
 
 ## 1. Cài đặt và chạy
