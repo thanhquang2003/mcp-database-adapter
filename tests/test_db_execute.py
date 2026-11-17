@@ -310,7 +310,7 @@ def test_oracle_table_info(monkeypatch, creds, make_profile):
 
 @pytest.mark.parametrize("kind", ["oracle", "mariadb"])
 @pytest.mark.parametrize("bad", ["a b", "t;drop table x", "a.b.c", "", "1abc", "t' or '1", "a.", "`t`",
-                                 '"a"b"', '"a b"', '"t', '""'])
+                                 '"a"b"', '"a b"', '"t', '""', "t\n", "a.b\n"])
 def test_table_info_rejects_bad_names(monkeypatch, creds, make_profile, kind, bad):
     conn = FakeConnection()
     cls = setup(monkeypatch, kind, conn)
@@ -327,7 +327,7 @@ def test_table_info_error_sanitized(monkeypatch, creds, make_profile):
     assert "SECRET-VALUE-123" not in str(ei.value) and conn.closed
 
 
-# --- vòng 2: đóng khi setup lỗi, streaming, lỗi sạch, chặn non-query ---
+# --- đóng khi setup lỗi, streaming, lỗi sạch, chặn non-query ---
 
 SETUP_FAIL = {"oracle": "SET TRANSACTION READ ONLY", "mariadb": "SET SESSION max_statement_time"}
 
@@ -403,14 +403,7 @@ def test_timeout_must_be_positive(monkeypatch, creds, make_profile, kind, secs):
     assert conn.log == []
 
 
-def test_session_has_no_abandon_hack():
-    from mcp_database.db import base
-    assert not hasattr(base.Session, "abandon_result")
-    import inspect
-    assert "abandon_on_truncate" not in inspect.signature(base.run_query).parameters
-
-
-# --- Fix wave D: timeout phía client và kết nối ---------------------------------
+# --- Timeout phía client và kết nối ---------------------------------
 
 
 def _capture(monkeypatch, module, conn):

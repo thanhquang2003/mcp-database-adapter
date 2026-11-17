@@ -13,7 +13,8 @@ from typing import Any, Callable, Iterator, Protocol
 from ..config import SystemProfile
 
 MAX_CELL_CHARS = 2000
-_TABLE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$#]*(\.[A-Za-z_][A-Za-z0-9_$#]*)?$")
+# Tên bảng do người gọi gửi: "bảng" hoặc "schema.bảng", chỉ ký tự định danh (dùng fullmatch).
+TABLE_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_$#]*(\.[A-Za-z_][A-Za-z0-9_$#]*)?")
 
 
 @dataclass
@@ -108,7 +109,7 @@ def get_credentials(profile: SystemProfile) -> tuple[str, str]:
 
 
 def parse_table_name(table: str) -> tuple[str | None, str]:
-    if not isinstance(table, str) or not _TABLE_RE.match(table):
+    if not isinstance(table, str) or not TABLE_NAME_RE.fullmatch(table):
         raise TableNotFound("Tên bảng không hợp lệ: chỉ nhận 'bảng' hoặc 'schema.bảng'")
     if "." in table:
         schema, name = table.split(".")
