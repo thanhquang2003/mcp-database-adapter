@@ -1,15 +1,16 @@
 # Hệ thống billing (ví dụ)
 
-Lưu ý về file này: định dạng hoàn toàn tự do. Server không phân tích nội dung, chỉ trả nguyên văn file cho Claude khi gọi `get_data_doc`, nên viết sao cho một người mới vào nhóm đọc là hiểu và viết đúng SQL. Hệ thống dưới đây là hư cấu, chỉ để minh họa nên viết gì.
+Lưu ý về file này: định dạng hoàn toàn tự do. Server không phân tích nội dung, chỉ trả nguyên văn file cho Claude khi gọi `get_data_doc`, nên viết sao cho một người mới vào nhóm đọc là hiểu và viết đúng SQL. Hệ thống dưới đây là hư cấu và mọi con số (số dòng, độ trễ...) chỉ là số minh họa; khi viết file thật hãy lấy số thật từ DBA.
 
-Database: Oracle, replica của billing. Mọi bảng nằm trong schema `BILLING`; luôn viết `billing.ten_bang`.
+Database: Oracle, replica của billing. Mọi bảng nằm trong schema `BILLING`; luôn viết đầy đủ `billing.ten_bang` (user đọc không có schema riêng, và tên có schema giúp server tra đúng thống kê của bảng).
 
 ## Cần biết trước khi viết SQL
 
 - `CDR_HISTORY` rất lớn (khoảng 2 tỷ dòng, thêm khoảng 15 triệu dòng mỗi ngày). Luôn lọc theo `CALL_TIME` với cả cận dưới và cận trên, tối đa 7 ngày mỗi query. Cần dài hơn thì chạy nhiều query rồi cộng lại.
 - Ưu tiên query tổng hợp: `COUNT`, `SUM`, `GROUP BY` theo ngày/loại cuộc gọi. Kéo dòng chi tiết thường không cần.
 - Cột nhạy cảm (mục cuối) bị băm hoặc che trong kết quả. Vẫn dùng để lọc, ghép, nhóm được.
-- Dữ liệu trên replica trễ so với hệ thống chính thường dưới 5 phút; đừng dùng nó để kết luận về giao dịch vừa xảy ra.
+- Replica có thể trễ so với hệ thống chính (ví dụ vài phút; hỏi DBA con số thật của hệ thống bạn), nên đừng dùng nó để kết luận về giao dịch vừa xảy ra.
+- Hai bảng lớn là `CDR_HISTORY` (lọc theo `CALL_TIME`, tối đa 7 ngày) và `INVOICE` (lọc theo `ISSUED_AT`, tối đa 93 ngày). Các bảng còn lại nhỏ hơn ngưỡng 5 triệu dòng của hệ thống này nên không bị buộc lọc thời gian; nếu một bảng lớn lên quá ngưỡng thì phải khai báo thêm vào cấu hình, nếu không mọi query vào bảng đó bị từ chối.
 
 ## Bảng
 
@@ -35,7 +36,7 @@ Ghi chú nghiệp vụ: cuộc gọi `FAILED` có `CHARGE_AMOUNT = 0`. Dòng `PE
 
 ### SUBSCRIBER
 
-Mỗi dòng một thuê bao, khoảng 40 triệu dòng, không cần lọc thời gian.
+Mỗi dòng một thuê bao, khoảng 2 triệu dòng (dưới ngưỡng bảng lớn của hệ thống này), nên không bắt buộc lọc thời gian.
 
 | Cột | Kiểu | Ý nghĩa |
 |---|---|---|
@@ -57,19 +58,20 @@ Danh mục gói cước, vài trăm dòng.
 
 ### INVOICE
 
-Hóa đơn hàng tháng, mỗi thuê bao một dòng mỗi kỳ.
+Hóa đơn hàng tháng, mỗi thuê bao một dòng mỗi kỳ, lưu nhiều năm nên là bảng lớn (khoảng 80 triệu dòng). Cột thời gian bắt buộc lọc là `ISSUED_AT`, tối đa 93 ngày mỗi query.
 
 | Cột | Kiểu | Ý nghĩa |
 |---|---|---|
 | INVOICE_ID | NUMBER | Khóa chính |
 | SUB_ID | NUMBER | Khóa ngoại tới `SUBSCRIBER.SUB_ID` |
-| PERIOD | VARCHAR2(6) | Kỳ cước, `YYYYMM` |
+| PERIOD | VARCHAR2(6) | Kỳ cước, `YYYYMM` (chuỗi, không dùng được để giới hạn thời gian) |
+| ISSUED_AT | DATE | Ngày phát hành hóa đơn. Cột thời gian bắt buộc lọc |
 | TOTAL_AMOUNT | NUMBER(18,2) | Tổng tiền gồm thuế, VND |
 | PAID_AT | DATE | Ngày thanh toán, NULL nếu chưa trả |
 
 ## Quan hệ
 
-`SUBSCRIBER.SUB_ID` nối với `CDR_HISTORY.SUB_ID` và `INVOICE.SUB_ID`; `SUBSCRIBER.PLAN_CODE` nối với `PLAN.PLAN_CODE`. Nếu cần ghép `CDR_HISTORY` với bảng khác thì lọc thời gian ngay trên `CDR_HISTORY` trong cùng câu SELECT đọc nó (hoặc trong subquery/CTE).
+`SUBSCRIBER.SUB_ID` nối với `CDR_HISTORY.SUB_ID` và `INVOICE.SUB_ID`; `SUBSCRIBER.PLAN_CODE` nối với `PLAN.PLAN_CODE`. Nếu cần ghép `CDR_HISTORY` hay `INVOICE` với bảng khác thì lọc thời gian ngay trên bảng lớn trong cùng câu SELECT đọc nó (hoặc trong subquery/CTE).
 
 ## Ví dụ truy vấn
 

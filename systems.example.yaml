@@ -19,13 +19,20 @@ systems:
       max_rows: 1000             # Số dòng tối đa trả về (mặc định 1000)
       timeout_seconds: 30        # Timeout mỗi truy vấn (mặc định 30)
       max_concurrent: 2          # Số truy vấn đồng thời tối đa (mặc định 2)
-      large_table_rows: 5000000  # Bảng lớn hơn ngưỡng này bắt buộc lọc theo cột thời gian
+      # Bảng là "lớn" khi có trong guard.tables bên dưới, hoặc khi thống kê của DB cho số dòng >= large_table_rows.
+      # Bảng lớn mà KHÔNG khai báo trong guard.tables bị TỪ CHỐI hoàn toàn (không có cột thời gian để giới hạn),
+      # nên mọi bảng vượt ngưỡng này đều phải có mặt trong guard.tables. View và bảng chưa có thống kê không tự
+      # được nhận là lớn: nếu chúng thật sự lớn thì khai báo vào guard.tables.
+      large_table_rows: 5000000
       max_explain_cost: 100000   # Chặn nếu cost trong EXPLAIN vượt ngưỡng (chỉ Oracle; MariaDB không có cost)
       max_explain_rows: 5000000  # Chặn nếu số dòng ước lượng vượt ngưỡng. Hai ngưỡng này chỉ là điểm xuất phát, chỉnh theo replica thật
-      tables:                    # Bảng lớn: cột thời gian bắt buộc và khoảng tối đa
+      tables:                    # Bảng lớn: cột thời gian bắt buộc và khoảng tối đa (khóa không cần schema)
         cdr_history:
           time_column: call_time
           max_range_days: 7
+        invoice:
+          time_column: issued_at
+          max_range_days: 93
       sensitive_columns:         # TABLE.COLUMN: hash (băm HMAC) | redact (che hoàn toàn). Cần MCP_DATABASE_HMAC_KEY
         cdr_history.msisdn: hash
         cdr_history.imsi: redact
