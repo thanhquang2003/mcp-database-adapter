@@ -1,6 +1,14 @@
 """Fixture dùng chung."""
 import pytest
 
+from fake_connector import FakeConnector
+
+
+@pytest.fixture
+def fake_connector():
+    """Connector giả theo protocol `Connector` (xem tests/fake_connector.py)."""
+    return FakeConnector()
+
 
 @pytest.fixture
 def creds(monkeypatch):
