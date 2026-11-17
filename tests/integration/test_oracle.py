@@ -40,11 +40,18 @@ def test_explain(conn):
 
 
 def test_timeout(conn):
+    # truy vấn tốn thời gian thuần SELECT (không dùng PL/SQL)
     with pytest.raises(TimeoutError):
-        conn.execute("BEGIN dbms_session.sleep(5); END;", 10, 1)
+        conn.execute("SELECT COUNT(*) FROM dual CONNECT BY LEVEL <= 100000000", 10, 1)
 
 
 def test_dml_rejected(conn):
     from mcp_database.db.base import DatabaseError
     with pytest.raises(DatabaseError):
         conn.execute("INSERT INTO dual VALUES ('X')", 10, 5)
+
+
+def test_non_query_rejected(conn):
+    from mcp_database.db.base import DatabaseError
+    with pytest.raises(DatabaseError):
+        conn.execute("BEGIN NULL; END;", 10, 5)

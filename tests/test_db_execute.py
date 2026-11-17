@@ -5,7 +5,7 @@ import pytest
 from mcp_database.db.base import DatabaseError
 from mcp_database.db.mariadb import MariaDBConnector
 from mcp_database.db.oracle import OracleConnector
-from conftest import FakeConnection
+from fakes import FakeConnection
 
 NLS = ("ALTER SESSION SET NLS_DATE_FORMAT = 'YYYY-MM-DD HH24:MI:SS' "
        "NLS_TIMESTAMP_FORMAT = 'YYYY-MM-DD HH24:MI:SS.FF' "
@@ -192,3 +192,76 @@ def test_table_info_error_sanitized(monkeypatch, creds, make_profile):
     with pytest.raises(DatabaseError) as ei:
         cls(make_profile("mariadb")).table_info("t")
     assert "SECRET-VALUE-123" not in str(ei.value) and conn.closed
+
+
+# --- vòng 2: đóng khi setup lỗi, streaming, lỗi sạch, chặn non-query ---
+
+SETUP_FAIL = {"oracle": "SET TRANSACTION READ ONLY", "mariadb": "SET SESSION max_statement_time"}
+
+
+@pytest.mark.parametrize("kind", ["oracle", "mariadb"])
+def test_setup_failure_closes_and_rolls_back(monkeypatch, creds, make_profile, kind):
+    conn = FakeConnection(fail={SETUP_FAIL[kind]: RuntimeError("SECRET-VALUE-123")})
+    cls = setup(monkeypatch, kind, conn)
+    with pytest.raises(DatabaseError) as ei:
+        cls(make_profile(kind)).execute("SELECT 1", 5, 5)
+    assert "SECRET-VALUE-123" not in str(ei.value)
+    assert conn.closed and ("rollback",) in conn.log and ("commit",) not in conn.log
+
+
+@pytest.mark.parametrize("kind", ["oracle", "mariadb"])
+@pytest.mark.parametrize("method", ["explain", "table_info"])
+def test_setup_failure_closes_other_methods(monkeypatch, creds, make_profile, kind, method):
+    fail_on = "SET SESSION max_statement_time" if kind == "mariadb" else "ALTER SESSION"
+    conn = FakeConnection(fail={fail_on: RuntimeError("x")})
+    cls = setup(monkeypatch, kind, conn)
+    with pytest.raises(DatabaseError):
+        getattr(cls(make_profile(kind)), method)("SELECT 1" if method == "explain" else "t")
+    assert conn.closed
+
+
+def test_mariadb_execute_uses_streaming_cursor(monkeypatch, creds, make_profile):
+    conn = FakeConnection(script={"SELECT": (["A"], [(1,)])})
+    cls = setup(monkeypatch, "mariadb", conn)
+    cls(make_profile("mariadb")).execute("SELECT 1", 5, 5)
+    assert (pymysql.cursors.SSCursor,) in conn.cursor_args
+
+
+def test_mariadb_truncated_closes_without_draining(monkeypatch, creds, make_profile):
+    conn = FakeConnection(script={"SELECT": (["A"], [(i,) for i in range(10)])})
+    cls = setup(monkeypatch, "mariadb", conn)
+    res = cls(make_profile("mariadb")).execute("SELECT 1", 3, 5)
+    assert res.truncated and conn.closed
+    assert ("rollback",) not in conn.log and ("fetchall",) not in conn.log
+
+
+@pytest.mark.parametrize("kind", ["oracle", "mariadb"])
+def test_non_query_rejected(monkeypatch, creds, make_profile, kind):
+    conn = FakeConnection()  # câu lệnh không có tập kết quả -> description None
+    cls = setup(monkeypatch, kind, conn)
+    with pytest.raises(DatabaseError) as ei:
+        cls(make_profile(kind)).execute("BEGIN NULL; COMMIT; END;", 5, 5)
+    assert "từ chối" in str(ei.value) and conn.closed
+    assert ("commit",) not in conn.log
+
+
+@pytest.mark.parametrize("kind", ["oracle", "mariadb"])
+@pytest.mark.parametrize("exc", [KeyError("SECRET-ROW"), TimeoutError("SECRET-T"),
+                                 IndexError("SECRET-ROW"), LookupError("SECRET-ROW")])
+def test_foreign_exceptions_are_wrapped(monkeypatch, creds, make_profile, kind, exc):
+    conn = FakeConnection(fail={"SELECT": exc})
+    cls = setup(monkeypatch, kind, conn)
+    with pytest.raises(DatabaseError) as ei:
+        cls(make_profile(kind)).execute("SELECT x", 3, 5)
+    assert "SECRET" not in str(ei.value) and "SECRET" not in repr(ei.value.args)
+    assert conn.closed
+
+
+@pytest.mark.parametrize("kind", ["oracle", "mariadb"])
+@pytest.mark.parametrize("secs", [0, -1])
+def test_timeout_must_be_positive(monkeypatch, creds, make_profile, kind, secs):
+    conn = FakeConnection()
+    cls = setup(monkeypatch, kind, conn)
+    with pytest.raises(ValueError):
+        cls(make_profile(kind)).execute("SELECT 1", 5, secs)
+    assert conn.log == []
