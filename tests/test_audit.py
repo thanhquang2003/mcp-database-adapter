@@ -79,3 +79,26 @@ def test_existing_file_mode_untouched(tmp_path):
     os.chmod(path, 0o640)
     AuditLog(path).write({"n": 1})
     assert stat.S_IMODE(path.stat().st_mode) == 0o640
+
+
+def test_symlinked_audit_path_refused(tmp_path, capsys):
+    import os
+    target = tmp_path / "target.jsonl"
+    target.write_text("", encoding="utf-8")
+    link = tmp_path / "audit.jsonl"
+    os.symlink(target, link)
+    log = AuditLog(link)
+    log.write({"n": 1})  # không ném lỗi
+    log.write({"n": 2})
+    assert target.read_text(encoding="utf-8") == ""
+    assert len(capsys.readouterr().err.splitlines()) == 1  # cảnh báo đúng một lần
+
+
+def test_dangling_symlink_not_created(tmp_path, capsys):
+    import os
+    target = tmp_path / "nope.jsonl"
+    link = tmp_path / "audit.jsonl"
+    os.symlink(target, link)
+    AuditLog(link).write({"n": 1})
+    assert not target.exists()
+    assert "audit" in capsys.readouterr().err

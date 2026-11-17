@@ -717,3 +717,30 @@ def test_mariadb_backtick_and_bare_share_cache_entry(tmp_path, audit_path):
     svc.run("m", "SELECT id FROM `t`")
     svc.run("m", "SELECT id FROM t")
     assert fake.table_info_calls == ["t"]
+
+
+def test_stats_cache_bounded_evicts_expired_then_oldest(clocked, monkeypatch):
+    import mcp_database.service as service_mod
+    monkeypatch.setattr(service_mod, "STATS_CACHE_MAX", 3)
+    clock = Clock()
+    fake = FakeConnector(tables={(None, n): info(100) for n in ("a", "b", "c", "d", "e")})
+    svc = clocked(fake, clock)
+    svc.run("cdr", "SELECT 1 FROM missing_x")   # mục âm, hết hạn sau 30 s
+    clock.now += 1
+    svc.run("cdr", "SELECT 1 FROM a")
+    svc.run("cdr", "SELECT 1 FROM b")
+    clock.now += 40                              # missing_x đã hết hạn
+    svc.run("cdr", "SELECT 1 FROM c")            # đầy -> bỏ mục hết hạn trước
+    assert {k[1] for k in svc._stats} == {"a", "b", "c"}
+    svc.run("cdr", "SELECT 1 FROM d")            # không mục nào hết hạn -> bỏ mục cũ nhất (a)
+    assert {k[1] for k in svc._stats} == {"b", "c", "d"}
+    assert len(svc._stats) <= 3
+
+
+def test_unknown_system_name_capped(build, audit_path):
+    svc, _ = build()
+    for call in (lambda: svc.run("Z" * 5000, SAFE), lambda: svc.table_info("Z" * 5000, "t"),
+                 lambda: svc.check("Z" * 5000, SAFE)):
+        with pytest.raises(LookupError) as e:
+            call()
+        assert "Z" * 101 not in str(e.value) and "Z" * 100 in str(e.value)

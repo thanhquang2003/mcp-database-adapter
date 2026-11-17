@@ -584,3 +584,12 @@ def test_stdio_protocol_smoke(tmp_path):
                                                     {"name": "shop", "db_type": "mariadb"}]
     assert time.monotonic() - started < 30
     assert "Traceback" not in (tmp_path / "stderr.log").read_text(encoding="utf-8")
+
+
+def test_unknown_system_name_capped_in_tool_output(build):
+    server, _, _ = build()
+    for tool, args in (("get_data_doc", {}), ("describe_table", {"table": "users"}),
+                       ("run_query", {"sql": "SELECT 1 FROM dual"})):
+        out = call(server, tool, system="Q" * 5000, **args)
+        text = out if isinstance(out, str) else json.dumps(out, ensure_ascii=False)
+        assert "Q" * 101 not in text and "Q" * 100 in text

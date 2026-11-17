@@ -53,6 +53,7 @@ from .names import norm
 MAX_SQL_CHARS = 20_000
 AUDIT_SQL_CHARS = 2000
 AUDIT_SYSTEM_CHARS = 100
+SYSTEM_NAME_CHARS = 100
 GENERIC_ERROR = "Lỗi không mong đợi khi xử lý truy vấn"
 BUSY_REASON = "hệ thống đang bận"
 BUSY_HINT = "thử lại sau"
@@ -61,6 +62,7 @@ BUSY_HINT = "thử lại sau"
 STATS_TTL_SECONDS = 300.0
 STATS_NEGATIVE_TTL_SECONDS = 30.0
 STATS_TIMEOUT_SECONDS = 5
+STATS_CACHE_MAX = 1024
 # Cùng dạng mã lỗi mà db.base chấp nhận (ORA-01555, ...) hoặc số nguyên (MariaDB).
 _ERROR_CODE = re.compile(r"[A-Z]{2,4}-\d{1,6}")
 
@@ -95,7 +97,10 @@ class _State:
 
 
 class UnknownSystem(LookupError):
-    pass
+    def __init__(self, system: str, known: list[str]):
+        # Tên do người gọi gửi lên: cắt ngắn trước khi đưa trở lại.
+        super().__init__(f"Không có hệ thống '{system[:SYSTEM_NAME_CHARS]}'. "
+                         f"Các hệ thống hiện có: {', '.join(sorted(known))}")
 
 
 class QueryService:
@@ -258,16 +263,26 @@ class QueryService:
             rows = None
         ttl = STATS_TTL_SECONDS if rows is not None else STATS_NEGATIVE_TTL_SECONDS
         with self._stats_lock:
-            self._stats[key] = (self._clock() + ttl, rows)
+            now = self._clock()
+            self._stats.pop(key, None)  # ghi lại thì xếp cuối (mới nhất)
+            if len(self._stats) >= STATS_CACHE_MAX:
+                for k in [k for k, (expires, _) in self._stats.items() if expires <= now]:
+                    del self._stats[k]
+            while len(self._stats) >= STATS_CACHE_MAX:
+                del self._stats[next(iter(self._stats))]  # dict giữ thứ tự chèn: cũ nhất trước
+            self._stats[key] = (now + ttl, rows)
         return rows
 
     # --- Hạ tầng -------------------------------------------------------------
 
+    def profile(self, system: str) -> SystemProfile:
+        """Profile của hệ thống; UnknownSystem (tên đã cắt ngắn) nếu không có."""
+        return self._profile(system)
+
     def _profile(self, system: str) -> SystemProfile:
         profile = self._config.systems.get(system)
         if profile is None:
-            known = ", ".join(sorted(self._config.systems))
-            raise UnknownSystem(f"Không có hệ thống '{system}'. Các hệ thống hiện có: {known}")
+            raise UnknownSystem(system, list(self._config.systems))
         return profile
 
     def _connector(self, profile: SystemProfile) -> Connector:

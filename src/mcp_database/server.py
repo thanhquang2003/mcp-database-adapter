@@ -160,12 +160,7 @@ def _date_literal(day: date, db_type: str) -> str:
 def build_server(service: QueryService, config: Config) -> MCPServer:
     mcp = MCPServer("mcp-database", instructions=INSTRUCTIONS)
 
-    def profile_of(system: str) -> SystemProfile:
-        profile = config.systems.get(system)
-        if profile is None:
-            known = ", ".join(sorted(config.systems))
-            raise UnknownSystem(f"Không có hệ thống '{system}'. Các hệ thống hiện có: {known}")
-        return profile
+    profile_of = service.profile
 
     @mcp.tool()
     async def list_systems() -> list[dict]:

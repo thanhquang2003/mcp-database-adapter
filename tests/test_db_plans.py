@@ -54,3 +54,15 @@ def test_mariadb_explain_max_across_ids():
 def test_mariadb_explain_no_rows():
     p = summarize_mariadb_explain([{"table": None, "type": None, "rows": None}])
     assert p.est_rows is None and p.full_scans == []
+
+
+def test_oracle_more_full_scan_variants():
+    p = summarize_oracle_plan([("SELECT STATEMENT", "", None, 9, 9),
+                               ("INDEX", "FULL SCAN DESCENDING", "A", 9, 9),
+                               ("BITMAP INDEX", "FULL SCAN", "B", 9, 9),
+                               ("BITMAP INDEX", "FAST FULL SCAN", "C", 9, 9),
+                               ("MAT_VIEW REWRITE ACCESS", "FULL", "D", 9, 9),
+                               ("INDEX", "FULL SCAN DESCENDING (MIN/MAX)", "E", 1, 1),
+                               ("BITMAP INDEX", "SINGLE VALUE", "F", 1, 1),
+                               ("INDEX", "RANGE SCAN DESCENDING", "G", 1, 1)])
+    assert p.full_scans == ["A", "B", "C", "D"]

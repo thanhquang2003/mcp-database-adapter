@@ -28,11 +28,12 @@ NLS_SQL = ("ALTER SESSION SET NLS_DATE_FORMAT = 'YYYY-MM-DD HH24:MI:SS' "
 
 def _is_full_scan(op: str, options: str) -> bool:
     op, options = op.upper(), options.upper()
-    if op.startswith(("TABLE ACCESS", "MAT_VIEW ACCESS")):
+    if op.startswith(("TABLE ACCESS", "MAT_VIEW ACCESS", "MAT_VIEW REWRITE ACCESS")):
         return "FULL" in options
-    if op == "INDEX":
-        # Đọc toàn bộ index; "FULL SCAN (MIN/MAX)" chỉ đọc một đầu index nên bỏ qua.
-        return options in ("FAST FULL SCAN", "FULL SCAN")
+    if op in ("INDEX", "BITMAP INDEX"):
+        # FULL SCAN / FAST FULL SCAN / FULL SCAN DESCENDING đọc toàn bộ index;
+        # biến thể (MIN/MAX) chỉ đọc một đầu index nên bỏ qua.
+        return "FULL SCAN" in options and "MIN/MAX" not in options
     return False
 
 

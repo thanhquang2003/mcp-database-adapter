@@ -20,10 +20,12 @@ class AuditLog:
 
         Quyền của file đã có sẵn được giữ nguyên (không chmod ngầm file của người quản trị).
         """
+        # O_NOFOLLOW: đường dẫn audit là symlink thì từ chối (cả tạo mới lẫn ghi nối).
+        nofollow = getattr(os, "O_NOFOLLOW", 0)
         try:
-            fd = os.open(self._path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_EXCL, 0o600)
+            fd = os.open(self._path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_EXCL | nofollow, 0o600)
         except FileExistsError:
-            fd = os.open(self._path, os.O_WRONLY | os.O_APPEND)
+            fd = os.open(self._path, os.O_WRONLY | os.O_APPEND | nofollow)
         else:
             os.fchmod(fd, 0o600)  # umask chỉ bớt quyền; vẫn cố định đúng 0600
         return os.fdopen(fd, "a", encoding="utf-8")
