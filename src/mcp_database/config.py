@@ -74,11 +74,27 @@ def _typed(value: Any, typ: type, key: str, ctx: str) -> Any:
     return value
 
 
+SYSTEM_KEYS = ("db_type", "host", "port", "database", "user_env", "password_env",
+               "data_doc", "is_replica", "allow_primary", "guard")
+GUARD_KEYS = ("max_rows", "timeout_seconds", "max_concurrent", "large_table_rows",
+              "max_explain_cost", "max_explain_rows", "tables", "sensitive_columns")
+TABLE_KEYS = ("time_column", "max_range_days")
+
+
+def _check_keys(raw: Mapping, allowed: tuple, level: str, ctx: str) -> None:
+    for k in raw:
+        if k not in allowed:
+            raise ConfigError(
+                f"Hệ thống '{ctx}': khóa lạ '{k}' ở mục {level}; "
+                f"chỉ chấp nhận: {', '.join(allowed)}")
+
+
 def _parse_guard(raw: Any, ctx: str) -> Guard:
     if raw is None:
         raw = {}
     if not isinstance(raw, dict):
         raise ConfigError(f"Hệ thống '{ctx}': trường 'guard' phải là mapping")
+    _check_keys(raw, GUARD_KEYS, "guard", ctx)
     kwargs: dict[str, Any] = {}
     for key in ("max_rows", "timeout_seconds", "max_concurrent", "large_table_rows",
                 "max_explain_cost", "max_explain_rows"):
@@ -94,9 +110,18 @@ def _parse_guard(raw: Any, ctx: str) -> Guard:
     for tname, t in raw_tables.items():
         if not isinstance(t, dict):
             raise ConfigError(f"Hệ thống '{ctx}': guard.tables.{tname} phải là mapping")
+        _check_keys(t, TABLE_KEYS, f"guard.tables.{tname}", ctx)
+        tkey = norm(str(tname))
+        if tkey in tables:
+            raise ConfigError(
+                f"Hệ thống '{ctx}': guard.tables.{tname} trùng tên bảng '{tkey}' sau khi chuẩn hóa")
+        days = _require(t, "max_range_days", int, f"{ctx}/guard.tables.{tname}")
+        if days <= 0:
+            raise ConfigError(
+                f"Hệ thống '{ctx}': guard.tables.{tname}.max_range_days phải > 0")
         tables[norm(str(tname))] = TableGuard(
             time_column=norm(_require(t, "time_column", str, f"{ctx}/guard.tables.{tname}")),
-            max_range_days=_require(t, "max_range_days", int, f"{ctx}/guard.tables.{tname}"),
+            max_range_days=days,
         )
     sensitive: dict[str, str] = {}
     raw_sens = raw.get("sensitive_columns") or {}
@@ -113,7 +138,11 @@ def _parse_guard(raw: Any, ctx: str) -> Guard:
         if len(parts) < 2:
             raise ConfigError(
                 f"Hệ thống '{ctx}': guard.sensitive_columns.{col} phải có dạng TABLE.COLUMN")
-        sensitive[f"{norm(parts[-2])}.{norm(parts[-1])}"] = mode
+        skey = f"{norm(parts[-2])}.{norm(parts[-1])}"
+        if skey in sensitive:
+            raise ConfigError(
+                f"Hệ thống '{ctx}': guard.sensitive_columns.{col} trùng cột '{skey}' sau khi chuẩn hóa")
+        sensitive[skey] = mode
     return Guard(**kwargs, tables=MappingProxyType(tables),
                  sensitive_columns=MappingProxyType(sensitive))
 
@@ -125,6 +154,7 @@ def _parse_system(name: str, raw: Any, base: Path) -> SystemProfile:
         raise ConfigError(
             f"Hệ thống '{name}': không được ghi 'password' trực tiếp; "
             "dùng 'password_env' trỏ tới biến môi trường")
+    _check_keys(raw, SYSTEM_KEYS, "hệ thống", name)
     db_type = _require(raw, "db_type", str, name)
     if db_type not in DB_TYPES:
         raise ConfigError(
@@ -135,11 +165,14 @@ def _parse_system(name: str, raw: Any, base: Path) -> SystemProfile:
         raise ConfigError(
             f"Hệ thống '{name}': phải khai báo is_replica: true (kết nối vào replica) "
             "hoặc allow_primary: true (xác nhận chủ ý đọc từ primary)")
+    port = _require(raw, "port", int, name)
+    if not 1 <= port <= 65535:
+        raise ConfigError(f"Hệ thống '{name}': trường 'port' phải trong khoảng 1..65535")
     return SystemProfile(
         name=name,
         db_type=db_type,
         host=_require(raw, "host", str, name),
-        port=_require(raw, "port", int, name),
+        port=port,
         database=_require(raw, "database", str, name),
         user_env=_require(raw, "user_env", str, name),
         password_env=_require(raw, "password_env", str, name),

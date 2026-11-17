@@ -94,3 +94,41 @@ def test_bad_db_type(tmp_path):
 def test_password_literal_rejected(tmp_path):
     with pytest.raises(ConfigError, match="biến môi trường"):
         load_config(write_yaml(tmp_path, variant("    port: 1521\n", "    port: 1521\n    password: x\n")))
+
+
+@pytest.mark.parametrize("old,new,key", [
+    ("    is_replica: true\n", "    is_replica: true\n    gaurd: {}\n", "gaurd"),
+    ("    guard:\n", "    guard:\n      max_row: 5\n", "max_row"),
+    ("      sensitive_columns:\n", "      sensitive_column:\n        a.b: hash\n      sensitive_columns:\n", "sensitive_column"),
+    ("          max_range_days: 7\n", "          max_range_days: 7\n          time_col: x\n", "time_col"),
+])
+def test_unknown_keys_rejected(tmp_path, old, new, key):
+    with pytest.raises(ConfigError, match=key) as e:
+        load_config(write_yaml(tmp_path, variant(old, new)))
+    assert "billing" in str(e.value)
+
+
+def test_duplicate_table_rejected(tmp_path):
+    text = variant("      sensitive_columns:\n",
+                   "        CDR_HISTORY:\n          time_column: t\n          max_range_days: 1\n"
+                   "      sensitive_columns:\n")
+    with pytest.raises(ConfigError, match="trùng"):
+        load_config(write_yaml(tmp_path, text))
+
+
+def test_duplicate_sensitive_rejected(tmp_path):
+    text = variant("        cdr_history.imsi: redact\n",
+                   "        cdr_history.imsi: redact\n        A.CDR_HISTORY.MSISDN: redact\n")
+    with pytest.raises(ConfigError, match="trùng"):
+        load_config(write_yaml(tmp_path, text))
+
+
+def test_max_range_days_positive(tmp_path):
+    with pytest.raises(ConfigError, match="max_range_days"):
+        load_config(write_yaml(tmp_path, variant("max_range_days: 7", "max_range_days: 0")))
+
+
+@pytest.mark.parametrize("port", ["0", "70000"])
+def test_port_range(tmp_path, port):
+    with pytest.raises(ConfigError, match="port"):
+        load_config(write_yaml(tmp_path, variant("port: 1521", f"port: {port}")))
