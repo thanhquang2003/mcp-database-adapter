@@ -9,7 +9,7 @@ from fakes import FakeConnection
 
 NLS = ("ALTER SESSION SET NLS_DATE_FORMAT = 'YYYY-MM-DD HH24:MI:SS' "
        "NLS_TIMESTAMP_FORMAT = 'YYYY-MM-DD HH24:MI:SS.FF' "
-       "NLS_TIMESTAMP_TZ_FORMAT = 'YYYY-MM-DD HH24:MI:SS.FF TZH:TZR'")
+       "NLS_TIMESTAMP_TZ_FORMAT = 'YYYY-MM-DD HH24:MI:SS.FF TZH:TZM'")
 
 
 def setup(monkeypatch, kind, conn):
@@ -408,3 +408,64 @@ def test_session_has_no_abandon_hack():
     assert not hasattr(base.Session, "abandon_result")
     import inspect
     assert "abandon_on_truncate" not in inspect.signature(base.run_query).parameters
+
+
+# --- Fix wave D: timeout phía client và kết nối ---------------------------------
+
+
+def _capture(monkeypatch, module, conn):
+    seen = []
+
+    def connect(**kw):
+        seen.append(kw)
+        return conn
+    monkeypatch.setattr(module, "connect", connect)
+    return seen
+
+
+def test_mariadb_client_timeouts_passed(monkeypatch, creds, make_profile):
+    conn = FakeConnection(script={"SELECT": (["A"], [(1,)])})
+    seen = _capture(monkeypatch, pymysql, conn)
+    MariaDBConnector(make_profile("mariadb")).execute("SELECT 1", 5, 7)
+    kw = seen[0]
+    assert kw["read_timeout"] == 12 and kw["write_timeout"] == 12 and kw["connect_timeout"] == 10
+
+
+def test_mariadb_client_timeouts_follow_call_timeout(monkeypatch, creds, make_profile):
+    conn = FakeConnection(script={"information_schema.tables": (["s", "t", "r"], [])})
+    seen = _capture(monkeypatch, pymysql, conn)
+    with pytest.raises(LookupError):
+        MariaDBConnector(make_profile("mariadb")).table_info("t", timeout_seconds=3)
+    assert seen[0]["read_timeout"] == 8
+
+
+def _lost(timed_out: bool):
+    exc = pymysql.err.OperationalError(2013, "Lost connection to MySQL server during query (SECRET)")
+    if timed_out:
+        exc.__context__ = TimeoutError("timed out")
+    return exc
+
+
+def test_mariadb_client_read_timeout_is_query_timeout(monkeypatch, creds, make_profile):
+    from mcp_database.db.base import QueryTimeout
+    conn = FakeConnection(fail={"SELECT": _lost(True)})
+    setup(monkeypatch, "mariadb", conn)
+    with pytest.raises(QueryTimeout, match="query vượt 5 giây") as ei:
+        MariaDBConnector(make_profile("mariadb")).execute("SELECT x", 3, 5)
+    assert "SECRET" not in str(ei.value) and conn.closed
+
+
+def test_mariadb_lost_connection_without_timeout_is_database_error(monkeypatch, creds, make_profile):
+    conn = FakeConnection(fail={"SELECT": _lost(False)})
+    setup(monkeypatch, "mariadb", conn)
+    with pytest.raises(DatabaseError) as ei:
+        MariaDBConnector(make_profile("mariadb")).execute("SELECT x", 3, 5)
+    assert not isinstance(ei.value, TimeoutError) and ei.value.code == 2013
+    assert "SECRET" not in str(ei.value)
+
+
+def test_oracle_tcp_connect_timeout(monkeypatch, creds, make_profile):
+    conn = FakeConnection(script={"SELECT": (["A"], [(1,)])})
+    seen = _capture(monkeypatch, oracledb, conn)
+    OracleConnector(make_profile("oracle")).execute("SELECT 1", 5, 7)
+    assert seen[0]["tcp_connect_timeout"] == 10

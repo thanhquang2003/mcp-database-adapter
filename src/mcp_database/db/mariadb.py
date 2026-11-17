@@ -14,6 +14,20 @@ from .base import (ColumnInfo, IndexInfo, PlanSummary, QueryResult, TableInfo,
 
 # 1969: Query execution was interrupted (max_statement_time).
 TIMEOUT_CODES = frozenset({1969})
+# 2013 (CR_SERVER_LOST): PyMySQL báo mất kết nối, kể cả khi hết read_timeout phía client.
+CR_SERVER_LOST = 2013
+CONNECT_TIMEOUT_SECONDS = 10
+# read/write_timeout phía client = timeout của query + biên này: server (max_statement_time)
+# ngắt trước; client chỉ là chốt chặn khi server/mạng treo, để worker không giữ slot mãi.
+CLIENT_TIMEOUT_MARGIN_SECONDS = 5
+
+
+def _is_client_timeout(exc: BaseException) -> bool:
+    """OperationalError 2013 do socket hết thời gian chờ (không đọc văn bản lỗi)."""
+    if not (exc.args and exc.args[0] == CR_SERVER_LOST):
+        return False
+    inner = exc.__cause__ or exc.__context__
+    return isinstance(inner, TimeoutError)
 
 
 def summarize_mariadb_explain(rows: list[dict]) -> PlanSummary:
@@ -46,12 +60,14 @@ class MariaDBConnector:
     def __init__(self, profile: SystemProfile):
         self.profile = profile
 
-    def _connect(self):
+    def _connect(self, timeout_seconds: int):
         user, password = get_credentials(self.profile)
         p = self.profile
+        client_timeout = int(timeout_seconds) + CLIENT_TIMEOUT_MARGIN_SECONDS
         return pymysql.connect(host=p.host, port=p.port, user=user, password=password,
                                database=p.database, charset="utf8mb4", autocommit=False,
-                               connect_timeout=10)
+                               connect_timeout=CONNECT_TIMEOUT_SECONDS,
+                               read_timeout=client_timeout, write_timeout=client_timeout)
 
     def _session(self, timeout_seconds: int, streaming: bool = False):
         def setup(conn):
@@ -61,7 +77,8 @@ class MariaDBConnector:
             cur.execute("SET SESSION TRANSACTION READ ONLY")
             cur.execute("START TRANSACTION")
             return cur
-        return session(self._connect, setup, TIMEOUT_CODES, timeout_seconds)
+        return session(lambda: self._connect(timeout_seconds), setup, TIMEOUT_CODES, timeout_seconds,
+                       is_timeout=_is_client_timeout)
 
     def execute(self, sql: str, max_rows: int, timeout_seconds: int) -> QueryResult:
         with self._session(timeout_seconds, streaming=True) as s:

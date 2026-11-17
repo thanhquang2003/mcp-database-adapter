@@ -19,9 +19,11 @@ from .base import (ColumnInfo, IndexInfo, PlanSummary, QueryResult, TableInfo,
 # DPY-4024: call_timeout của driver; ORA-01013 / ORA-03156: bị ngắt do hết thời gian.
 TIMEOUT_CODES = frozenset({"DPY-4024", "ORA-01013", "ORA-03156"})
 
+CONNECT_TIMEOUT_SECONDS = 10
+
 NLS_SQL = ("ALTER SESSION SET NLS_DATE_FORMAT = 'YYYY-MM-DD HH24:MI:SS' "
            "NLS_TIMESTAMP_FORMAT = 'YYYY-MM-DD HH24:MI:SS.FF' "
-           "NLS_TIMESTAMP_TZ_FORMAT = 'YYYY-MM-DD HH24:MI:SS.FF TZH:TZR'")
+           "NLS_TIMESTAMP_TZ_FORMAT = 'YYYY-MM-DD HH24:MI:SS.FF TZH:TZM'")
 
 
 def _is_full_scan(op: str, options: str) -> bool:
@@ -63,7 +65,8 @@ class OracleConnector:
         user, password = get_credentials(self.profile)
         p = self.profile
         return oracledb.connect(user=user, password=password,
-                                dsn=f"{p.host}:{p.port}/{p.database}")
+                                dsn=f"{p.host}:{p.port}/{p.database}",
+                                tcp_connect_timeout=CONNECT_TIMEOUT_SECONDS)
 
     def _session(self, timeout_seconds: int, read_only: bool = True):
         def setup(conn):

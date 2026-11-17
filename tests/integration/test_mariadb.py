@@ -129,3 +129,21 @@ def test_stats_lookup_through_service(conn, writer):
     assert r.rows == [(2,)]
     key = ("it", database, "it_t")
     assert key in svc._stats and svc._stats[key][1] is not None
+
+
+def test_client_read_timeout_maps_to_timeout(conn, monkeypatch):
+    # Ép read_timeout phía client (1 s) ngắn hơn max_statement_time phía server (3 s).
+    import mcp_database.db.mariadb as mariadb_mod
+    from mcp_database.db.base import QueryTimeout
+    monkeypatch.setattr(mariadb_mod, "CLIENT_TIMEOUT_MARGIN_SECONDS", -2)
+    t0 = time.monotonic()
+    with pytest.raises(QueryTimeout):
+        conn.execute("SELECT SLEEP(5)", 10, 3)
+    assert time.monotonic() - t0 < 3
+
+
+def test_server_timeout_wins_with_default_margin(conn):
+    t0 = time.monotonic()
+    with pytest.raises(TimeoutError):
+        conn.execute("SELECT SLEEP(5)", 10, 1)
+    assert time.monotonic() - t0 < 3  # max_statement_time (1 s), không phải read_timeout (6 s)

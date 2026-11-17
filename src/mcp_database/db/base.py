@@ -151,15 +151,19 @@ def _error_code(exc: BaseException) -> str | int | None:
 
 
 @contextmanager
-def sanitize_errors(timeout_codes: frozenset, timeout_seconds: int) -> Iterator[None]:
-    """Chỉ cho qua exception do chính lớp này tạo; mọi thứ khác bị bọc thành DatabaseError."""
+def sanitize_errors(timeout_codes: frozenset, timeout_seconds: int,
+                    is_timeout: Callable[[BaseException], bool] | None = None) -> Iterator[None]:
+    """Chỉ cho qua exception do chính lớp này tạo; mọi thứ khác bị bọc thành DatabaseError.
+
+    is_timeout: nhận diện thêm timeout phía client (vd. read_timeout của PyMySQL).
+    """
     try:
         yield
     except (DatabaseError, TableNotFound, QueryTimeout, MissingCredentialError):
         raise
     except Exception as exc:
         code = _error_code(exc)
-        if code in timeout_codes:
+        if code in timeout_codes or (is_timeout is not None and is_timeout(exc)):
             raise QueryTimeout(timeout_seconds) from exc
         raise DatabaseError(code) from exc
 
@@ -226,7 +230,8 @@ class Session:
 
 @contextmanager
 def session(connect: Callable[[], Any], setup: Callable[[Any], Any],
-            timeout_codes: frozenset, timeout_seconds: int) -> Iterator[Session]:
+            timeout_codes: frozenset, timeout_seconds: int,
+            is_timeout: Callable[[BaseException], bool] | None = None) -> Iterator[Session]:
     """connect -> setup (trả cursor) -> yield -> đóng cursor -> rollback -> close,
     kể cả khi setup lỗi."""
     if timeout_seconds <= 0:
@@ -234,7 +239,7 @@ def session(connect: Callable[[], Any], setup: Callable[[Any], Any],
     conn = None
     sess: Session | None = None
     try:
-        with sanitize_errors(timeout_codes, timeout_seconds):
+        with sanitize_errors(timeout_codes, timeout_seconds, is_timeout):
             conn = connect()
             sess = Session(conn, setup(conn))
             yield sess
