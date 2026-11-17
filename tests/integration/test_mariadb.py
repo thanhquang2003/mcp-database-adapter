@@ -127,7 +127,7 @@ def test_stats_lookup_through_service(conn, writer):
     # Linux: lower_case_table_names=0 nên câu truy vấn phải đúng hoa thường; tra thống kê thì không.
     r = svc.run("it", f"SELECT COUNT(*) FROM {database}.it_t")
     assert r.rows == [(2,)]
-    key = ("it", database, "it_t")
+    key = ("it", f"{database}.it_t")
     assert key in svc._stats and svc._stats[key][1] is not None
 
 

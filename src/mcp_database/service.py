@@ -118,8 +118,8 @@ class QueryService:
         self._connectors: dict[str, Connector] = {}
         self._connectors_lock = threading.Lock()
         self._clock = clock
-        # (system, schema như đã viết | None, tên như đã viết) -> (hết hạn lúc, số dòng | None)
-        self._stats: dict[tuple[str, str | None, str], tuple[float, int | None]] = {}
+        # (system, đúng chuỗi gửi cho table_info) -> (hết hạn lúc, số dòng | None)
+        self._stats: dict[tuple[str, str], tuple[float, int | None]] = {}
         self._stats_lock = threading.Lock()
 
     def __repr__(self) -> str:
@@ -241,7 +241,11 @@ class QueryService:
 
         Lỗi thống kê không làm hỏng query: coi như không biết (cổng EXPLAIN bắt phần còn lại).
         """
-        key = (profile.name, ref.schema, ref.name)
+        # Khóa là đúng chuỗi gửi cho table_info (gồm cả dấu nháy với Oracle): kết quả tra là
+        # hàm của chuỗi này, nên hai đối tượng khác nhau ("billing"."huge" và billing.huge =
+        # BILLING.HUGE) không bao giờ dùng chung một mục cache.
+        ref_text = _ref_text(ref, profile.db_type)
+        key = (profile.name, ref_text)
         now = self._clock()
         with self._stats_lock:
             hit = self._stats.get(key)
@@ -249,7 +253,7 @@ class QueryService:
                 return hit[1]
         timeout = min(profile.guard.timeout_seconds, STATS_TIMEOUT_SECONDS)
         try:
-            rows = connector.table_info(_ref_text(ref, profile.db_type), timeout_seconds=timeout).estimated_rows
+            rows = connector.table_info(ref_text, timeout_seconds=timeout).estimated_rows
         except (TableNotFound, DatabaseError, TimeoutError):
             rows = None
         ttl = STATS_TTL_SECONDS if rows is not None else STATS_NEGATIVE_TTL_SECONDS

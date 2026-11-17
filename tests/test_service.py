@@ -680,3 +680,40 @@ def test_audit_system_field_truncated(build, audit_path):
     with pytest.raises(LookupError):
         svc.run("x" * 5000, SAFE)
     assert len(last_event(audit_path)["system"]) == 100
+
+
+# --- Final round: cache không được gộp hai đối tượng khác nhau --------------------
+
+# billing.huge (không nháy) = BILLING.HUGE trên Oracle; "billing"."huge" là đối tượng khác.
+BIG_UNQUOTED = ("billing", "huge")
+SMALL_QUOTED = ('"billing"', '"huge"')
+
+
+@pytest.mark.parametrize("small_exists", [False, True])
+@pytest.mark.parametrize("order", ["quoted_first", "unquoted_first"])
+def test_cache_keeps_quoted_and_unquoted_refs_apart(clocked, small_exists, order):
+    tables = {BIG_UNQUOTED: info(40_000_000)}
+    if small_exists:
+        tables[SMALL_QUOTED] = info(100)
+    fake = FakeConnector(tables=tables)
+    svc = clocked(fake, Clock())
+    quoted, unquoted = 'SELECT COUNT(*) FROM "billing"."huge"', "SELECT COUNT(*) FROM billing.huge"
+    for sql in ([quoted, unquoted] if order == "quoted_first" else [unquoted, quoted]):
+        if sql is unquoted:
+            with pytest.raises(QueryRejected) as e:
+                svc.run("cdr", sql)
+            assert "HUGE" in e.value.reason
+        else:
+            svc.run("cdr", sql)  # không/ít thống kê -> không phải bảng lớn
+    assert sorted(fake.table_info_calls) == sorted(['"billing"."huge"', "billing.huge"])
+
+
+def test_mariadb_backtick_and_bare_share_cache_entry(tmp_path, audit_path):
+    fake = FakeConnector(tables={(None, "t"): info(100)})
+    profile = make_profile(tmp_path, name="m", db_type="mariadb")
+    cfg = Config(audit_log=audit_path, systems=MappingProxyType({"m": profile}))
+    svc = QueryService(cfg, connector_factory=lambda p: fake, hmac_key=KEY, today=lambda: TODAY,
+                       clock=Clock())
+    svc.run("m", "SELECT id FROM `t`")
+    svc.run("m", "SELECT id FROM t")
+    assert fake.table_info_calls == ["t"]
