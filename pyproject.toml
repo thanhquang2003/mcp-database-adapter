@@ -23,3 +23,6 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+  "integration: cần database thật (đặt TEST_MARIADB_DSN / TEST_ORACLE_DSN)",
+]
