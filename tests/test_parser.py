@@ -1,4 +1,7 @@
 import pytest
+from sqlglot.dialects.dialect import Dialect
+from sqlglot.dialects.mysql import MySQL
+from sqlglot.dialects.oracle import Oracle
 
 from mcp_database.guard.parser import ParsedQuery, QueryRejected, parse_select
 
@@ -122,11 +125,38 @@ def test_mariadb_blocked_functions(sql):
     assert rejection(sql, "mariadb").hint
 
 
-def test_mariadb_executable_comment_not_in_output():
-    parsed = parse_select("SELECT a /*!50000 , SLEEP(5) */ FROM t /*M! ; DROP TABLE t */", "mariadb")
-    assert "SLEEP" not in parsed.sql.upper()
-    assert "DROP" not in parsed.sql.upper()
-    assert "/*" not in parsed.sql
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT a /*!50000 , SLEEP(5) */ FROM t",
+        "SELECT a FROM t /*M! ; DROP TABLE t */",
+        "SELECT a FROM t /*m!100000 x */",
+        "/*!50000 SELECT*/ 1",
+        "SELECT a FROM t /*!*/",
+    ],
+)
+def test_mariadb_executable_comment_rejected(sql):
+    err = rejection(sql, "mariadb")
+    assert "thực thi" in err.reason
+    assert err.hint
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT '/*!50000 x */' AS s FROM t",
+        "SELECT a FROM t /* ! không phải lệnh */",
+        "SELECT a FROM t -- /*! chỉ là comment dòng */",
+        "SELECT a FROM t # /*! chỉ là comment dòng */",
+        "SELECT /*+ MAX_EXECUTION_TIME(1000) */ a FROM t",
+    ],
+)
+def test_mariadb_ordinary_comments_and_strings_ok(sql):
+    assert parse_select(sql, "mariadb").tables == ("T",)
+
+
+def test_oracle_bang_comment_not_rejected():
+    assert parse_select("SELECT a FROM t /*! ghi chú */", "oracle").tables == ("T",)
 
 
 def test_oracle_hint_stripped():
@@ -146,8 +176,89 @@ def test_trailing_semicolon_with_comment_accepted(db_type):
 
 
 def test_dialect_recorded():
-    assert parse_select("SELECT a FROM t", "oracle").dialect == "oracle"
-    assert parse_select("SELECT a FROM t", "mariadb").dialect == "mysql"
+    assert issubclass(type(Dialect.get_or_raise(parse_select("SELECT a FROM t", "oracle").dialect)), Oracle)
+    assert issubclass(type(Dialect.get_or_raise(parse_select("SELECT a FROM t", "mariadb").dialect)), MySQL)
+
+
+# Round-trip: SQL sinh lại phải chạy được trên Oracle 12c/19c và MariaDB.
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT a FROM t MINUS SELECT a FROM u",
+        "select a from t minus select a from u",
+        "WITH x AS (SELECT a FROM t MINUS SELECT a FROM u) SELECT a FROM x",
+        "SELECT a FROM t WHERE a IN (SELECT a FROM t MINUS SELECT a FROM u)",
+    ],
+)
+def test_oracle_minus_round_trips(sql):
+    parsed = parse_select(sql, "oracle")
+    for out in (parsed.sql, parsed.expression.sql(dialect=parsed.dialect)):
+        assert "MINUS" in out.upper()
+        assert "EXCEPT" not in out.upper()
+    assert parse_select(parsed.sql, "oracle").sql == parsed.sql
+
+
+def test_oracle_other_set_ops_unchanged():
+    assert "UNION ALL" in parse_select("SELECT a FROM t UNION ALL SELECT a FROM u", "oracle").sql
+    assert "INTERSECT" in parse_select("SELECT a FROM t INTERSECT SELECT a FROM u", "oracle").sql
+
+
+@pytest.mark.parametrize(
+    "sql",
+    ["SELECT a FROM t MINUS ALL SELECT a FROM u", "SELECT a FROM t INTERSECT ALL SELECT a FROM u"],
+)
+def test_oracle_set_op_all_rejected(sql):
+    assert rejection(sql, "oracle").hint
+
+
+@pytest.mark.parametrize(
+    "sql, expected",
+    [
+        ("SELECT a FROM t WHERE a REGEXP 'x'", "A REGEXP 'X'"),
+        ("SELECT a FROM t WHERE a RLIKE 'x'", "A REGEXP 'X'"),
+        ("SELECT a FROM t WHERE a NOT REGEXP 'x'", "A NOT REGEXP 'X'"),
+        ("SELECT a FROM t WHERE a NOT RLIKE 'x'", "A NOT REGEXP 'X'"),
+        ("SELECT a FROM t WHERE (a REGEXP 'x') = 1 AND b NOT REGEXP 'y'", "B NOT REGEXP 'Y'"),
+    ],
+)
+def test_mariadb_regexp_round_trips(sql, expected):
+    parsed = parse_select(sql, "mariadb")
+    for out in (parsed.sql, parsed.expression.sql(dialect=parsed.dialect)):
+        assert expected in out.upper()
+        assert "REGEXP_LIKE" not in out.upper()
+    assert parse_select(parsed.sql, "mariadb").sql == parsed.sql
+
+
+def test_oracle_regexp_like_kept():
+    assert "REGEXP_LIKE(a, 'x', 'i')" in parse_select("SELECT a FROM t WHERE REGEXP_LIKE(a, 'x', 'i')", "oracle").sql
+
+
+def test_mariadb_regexp_like_with_flag_rejected():
+    assert rejection("SELECT a FROM t WHERE REGEXP_LIKE(a, 'x', 'i')", "mariadb").hint
+
+
+@pytest.mark.parametrize(
+    "sql, db",
+    [
+        ("SELECT f@remote_link(1) FROM dual", "oracle"),
+        ("SELECT a FROM t WHERE a = f@remote_link(1)", "oracle"),
+        ("SELECT s.NEXTVAL FROM dual", "oracle"),
+        ("SELECT app.s.nextval FROM dual", "oracle"),
+        ("SELECT s.nextval FROM dual", "mariadb"),
+        ("SELECT NEXTVAL(s)", "mariadb"),
+        ("SELECT nextval(s) FROM t", "mariadb"),
+        ("SELECT SETVAL(s, 100)", "mariadb"),
+        ("SELECT LASTVAL(s)", "mariadb"),
+        ("SELECT MASTER_POS_WAIT('f', 1)", "mariadb"),
+        ("SELECT MASTER_GTID_WAIT('0-1-1')", "mariadb"),
+    ],
+)
+def test_hardened_rejections(sql, db):
+    assert rejection(sql, db).hint
+
+
+def test_currval_allowed():
+    assert parse_select("SELECT s.CURRVAL FROM dual", "oracle").tables == ("DUAL",)
 
 
 def test_cte_name_not_a_table():

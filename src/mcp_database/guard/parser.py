@@ -11,10 +11,41 @@ from dataclasses import dataclass
 
 import sqlglot
 from sqlglot import exp
+from sqlglot.dialects.mysql import MySQL
+from sqlglot.dialects.oracle import Oracle
 
 from mcp_database.names import norm
 
-DIALECTS = {"oracle": "oracle", "mariadb": "mysql"}
+
+class McpOracle(Oracle):
+    """Oracle 12c/19c: sinh lại MINUS thay vì EXCEPT (EXCEPT chỉ có từ 21c)."""
+
+    class Generator(Oracle.Generator):
+        def set_operation(self, expression: exp.SetOperation) -> str:
+            out = super().set_operation(expression)
+            if isinstance(expression, exp.Except) and out.startswith("EXCEPT"):
+                return "MINUS" + out[len("EXCEPT"):]
+            return out
+
+
+class McpMariadb(MySQL):
+    """MariaDB không có hàm REGEXP_LIKE: sinh lại toán tử REGEXP / NOT REGEXP."""
+
+    class Generator(MySQL.Generator):
+        TRANSFORMS = {
+            **MySQL.Generator.TRANSFORMS,
+            exp.RegexpLike: lambda self, e: self.binary(e, "REGEXP"),
+        }
+
+        def not_sql(self, expression: exp.Not) -> str:
+            if isinstance(expression.this, exp.RegexpLike):
+                return self.binary(expression.this, "NOT REGEXP")
+            return super().not_sql(expression)
+
+
+# Tên đăng ký của các dialect con trong registry của sqlglot (tên lớp viết thường),
+# để nơi khác gọi `.sql(dialect=parsed.dialect)` vẫn sinh SQL chạy được.
+DIALECTS = {"oracle": "mcporacle", "mariadb": "mcpmariadb"}
 
 HINT_SELECT_ONLY = "Chỉ được gửi đúng một câu SELECT hoặc WITH ... SELECT, không ghi/khóa dữ liệu."
 HINT_REWRITE = "Hãy viết lại bằng cú pháp SELECT chuẩn."
@@ -37,7 +68,19 @@ FORBIDDEN_NODES: tuple[type[exp.Expression], ...] = (
 )
 
 BLOCKED_FUNCTIONS = frozenset(
-    {"SLEEP", "BENCHMARK", "LOAD_FILE", "GET_LOCK", "RELEASE_LOCK", "RELEASE_ALL_LOCKS"}
+    {
+        "SLEEP",
+        "BENCHMARK",
+        "LOAD_FILE",
+        "GET_LOCK",
+        "RELEASE_LOCK",
+        "RELEASE_ALL_LOCKS",
+        "MASTER_POS_WAIT",
+        "MASTER_GTID_WAIT",
+        "NEXTVAL",
+        "SETVAL",
+        "LASTVAL",
+    }
 )
 BLOCKED_PREFIXES = ("DBMS_", "UTL_")
 
@@ -63,7 +106,11 @@ def parse_select(sql: str, db_type: str) -> ParsedQuery:
         raise ValueError(f"db_type không hỗ trợ: {db_type!r}")
 
     try:
+        if db_type == "mariadb":
+            _reject_executable_comments(sql, dialect)
         statements = sqlglot.parse(sql, read=dialect)
+    except QueryRejected:
+        raise
     except Exception as e:  # mặc định từ chối: mọi lỗi parse đều là QueryRejected
         raise QueryRejected(f"Không parse được câu SQL theo cú pháp {db_type}: {_first_line(e)}", HINT_REWRITE) from e
 
@@ -79,6 +126,10 @@ def parse_select(sql: str, db_type: str) -> ParsedQuery:
         raise QueryRejected(f"Chỉ cho phép SELECT, không cho phép {_kind(root)}.", HINT_SELECT_ONLY)
 
     _check_tree(root)
+    if db_type == "oracle":
+        _check_oracle_round_trip(root)
+    else:
+        _check_mariadb_round_trip(root)
 
     for hint in list(root.find_all(exp.Hint)):
         hint.pop()
@@ -97,6 +148,40 @@ def _is_select_root(node: exp.Expression) -> bool:
     return isinstance(node, (exp.Select, exp.SetOperation))
 
 
+def _reject_executable_comments(sql: str, dialect: str) -> None:
+    """MariaDB chạy nội dung `/*! ... */` và `/*M! ... */` như SQL thật.
+
+    Dùng tokenizer nên `/*!` nằm trong chuỗi ký tự không bị bắt nhầm. Tokenizer
+    không phân biệt comment khối với comment dòng, nên `--!x` / `#!x` cũng bị
+    từ chối (thà chặn thừa).
+    """
+    for token in sqlglot.Dialect.get_or_raise(dialect).tokenize(sql):
+        for comment in token.comments:
+            if comment.startswith("!") or comment[:2].upper() == "M!":
+                raise QueryRejected(
+                    "Không cho dùng comment thực thi của MariaDB (/*! ... */ hoặc /*M! ... */).",
+                    "Bỏ comment này; nếu cần điều kiện thì viết thẳng vào câu SELECT.",
+                )
+
+
+def _check_oracle_round_trip(root: exp.Expression) -> None:
+    for node in root.find_all(exp.Except, exp.Intersect):
+        if node.args.get("distinct") is False:
+            raise QueryRejected(
+                f"Oracle 12c/19c không hỗ trợ {_kind(node)} ALL.",
+                "Dùng MINUS / INTERSECT (không có ALL), hoặc viết lại bằng NOT EXISTS / EXISTS.",
+            )
+
+
+def _check_mariadb_round_trip(root: exp.Expression) -> None:
+    for node in root.find_all(exp.RegexpLike):
+        if node.args.get("flag") is not None or node.args.get("full_match"):
+            raise QueryRejected(
+                "MariaDB không có hàm REGEXP_LIKE với tham số cờ.",
+                "Dùng toán tử: cột REGEXP 'mẫu' (thêm (?i) vào mẫu nếu cần không phân biệt hoa thường).",
+            )
+
+
 def _check_tree(root: exp.Expression) -> None:
     for node in root.walk():
         if isinstance(node, FORBIDDEN_NODES):
@@ -105,6 +190,11 @@ def _check_tree(root: exp.Expression) -> None:
             name = _func_name(node)
             if name in BLOCKED_FUNCTIONS or name.startswith(BLOCKED_PREFIXES):
                 raise QueryRejected(f"Hàm {name} bị chặn vì có tác dụng phụ.", HINT_FUNCTION)
+            if "@" in name:
+                raise QueryRejected(
+                    f"Không cho gọi hàm qua database link: {name}.",
+                    "Chỉ dùng hàm trong chính hệ thống này.",
+                )
         if isinstance(node, exp.Dot) and isinstance(node.expression, exp.Func):
             raise QueryRejected(
                 f"Không cho gọi hàm qua schema/package: {node.sql(comments=False)}.", HINT_FUNCTION
@@ -114,6 +204,11 @@ def _check_tree(root: exp.Expression) -> None:
             for part in (node.args.get("table"), node.args.get("db"), node.args.get("catalog")):
                 if part is not None and norm(part.name).startswith(BLOCKED_PREFIXES):
                     raise QueryRejected(f"Không cho dùng package {part.name}.", HINT_FUNCTION)
+            if node.args.get("table") is not None and norm(node.name) == "NEXTVAL":
+                raise QueryRejected(
+                    "Không cho dùng sequence.NEXTVAL vì làm tăng sequence.",
+                    "Bỏ NEXTVAL; nếu cần giá trị hiện tại thì dùng CURRVAL hoặc đọc từ bảng.",
+                )
         if isinstance(node, exp.Table):
             parts = [p.name for p in node.parts]
             if any("@" in p for p in parts):
