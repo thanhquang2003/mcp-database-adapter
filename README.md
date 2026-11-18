@@ -109,13 +109,15 @@ claude mcp add database `
   -- C:\mcp-database\.venv\Scripts\python.exe -m mcp_database
 ```
 
+Hai chỗ hay vấp khi đăng ký trên Windows: (1) thay `C:\mcp-database` bằng thư mục bạn thật sự cài (ví dụ `D:\source\mcp-database-adapter`) và thay `...` bằng giá trị thật; (2) nếu PowerShell báo "running scripts is disabled on this system" khi gõ `claude`, gõ `claude.cmd` thay vào (hoặc `Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned`). Đặt bí mật ngay trong lệnh `claude mcp add` thì chúng nằm nguyên văn trong cấu hình Claude; cách đặt bí mật trong file `.cmd` ngoài repo, khóa quyền bằng `icacls`, ở `docs/huong-dan.md`, mục 5.
+
 **Bạn đang ở `cmd` (dấu nhắc dạng `C:\...>`, không có chữ `PS`) thay vì PowerShell?** Các lệnh `$env:...` ở trên chỉ chạy trong PowerShell; gõ vào `cmd` sẽ báo "The filename, directory name, or volume label syntax is incorrect". Có hai cách: gõ `powershell` để chuyển sang PowerShell rồi làm lại, hoặc dùng bản `cmd` này (biến chỉ có hiệu lực trong cửa sổ hiện tại; không đặt dấu ngoặc kép hay dấu cách quanh `=`):
 
 ```bat
-set MCP_DATABASE_CONFIG=C:\mcp-database\systems.yaml
-for /f %i in ('py -3 -c "import secrets; print(secrets.token_hex(32))"') do set MCP_DATABASE_HMAC_KEY=%i
-set BILLING_DB_USER=...
-set BILLING_DB_PASS=...
+set "MCP_DATABASE_CONFIG=C:\mcp-database\systems.yaml"
+for /f %i in ('py -3 -c "import secrets; print(secrets.token_hex(32))"') do set "MCP_DATABASE_HMAC_KEY=%i"
+set "BILLING_DB_USER=..."
+set "BILLING_DB_PASS=..."
 .venv\Scripts\python.exe scripts\kiem_tra_server.py
 ```
 
@@ -275,13 +277,15 @@ claude mcp add database `
   -- C:\mcp-database\.venv\Scripts\python.exe -m mcp_database
 ```
 
+Two common stumbling blocks when registering on Windows: (1) replace `C:\mcp-database` with the folder you actually installed to (for example `D:\source\mcp-database-adapter`) and replace `...` with real values; (2) if PowerShell says "running scripts is disabled on this system" when you type `claude`, type `claude.cmd` instead (or run `Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned`). Putting secrets directly in the `claude mcp add` command stores them in plain text in Claude's configuration; keeping them in a `.cmd` file outside the repo, locked down with `icacls`, is described in `docs/huong-dan.md`, section 5.
+
 **Are you in `cmd` (a prompt like `C:\...>`, with no `PS`) instead of PowerShell?** The `$env:...` lines above only work in PowerShell; typing them into `cmd` gives "The filename, directory name, or volume label syntax is incorrect". Either type `powershell` to switch and run them again, or use this `cmd` version (the variables last only for the current window; no quotes or spaces around `=`):
 
 ```bat
-set MCP_DATABASE_CONFIG=C:\mcp-database\systems.yaml
-for /f %i in ('py -3 -c "import secrets; print(secrets.token_hex(32))"') do set MCP_DATABASE_HMAC_KEY=%i
-set BILLING_DB_USER=...
-set BILLING_DB_PASS=...
+set "MCP_DATABASE_CONFIG=C:\mcp-database\systems.yaml"
+for /f %i in ('py -3 -c "import secrets; print(secrets.token_hex(32))"') do set "MCP_DATABASE_HMAC_KEY=%i"
+set "BILLING_DB_USER=..."
+set "BILLING_DB_PASS=..."
 .venv\Scripts\python.exe scripts\kiem_tra_server.py
 ```
 

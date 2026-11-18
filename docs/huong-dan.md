@@ -149,13 +149,13 @@ cd C:\mcp-database
 .venv\Scripts\python.exe scripts\kiem_tra_server.py
 ```
 
-Nếu dấu nhắc của bạn là `C:\...>` (không có chữ `PS`) thì bạn đang ở `cmd`, và các lệnh `$env:...` sẽ báo "The filename, directory name, or volume label syntax is incorrect". Gõ `powershell` để chuyển, hoặc dùng bản `cmd` (không đặt ngoặc kép hay dấu cách quanh `=`; trong file `.bat` viết `%%i` thay cho `%i`):
+Nếu dấu nhắc của bạn là `C:\...>` (không có chữ `PS`) thì bạn đang ở `cmd`, và các lệnh `$env:...` sẽ báo "The filename, directory name, or volume label syntax is incorrect". Gõ `powershell` để chuyển, hoặc dùng bản `cmd` (dùng dạng `set "TÊN=giá trị"` để mật khẩu có ký tự đặc biệt không làm hỏng lệnh; trong file `.bat` viết `%%i` thay cho `%i`):
 
 ```bat
-set MCP_DATABASE_CONFIG=C:\mcp-database\systems.yaml
-for /f %i in ('py -3 -c "import secrets; print(secrets.token_hex(32))"') do set MCP_DATABASE_HMAC_KEY=%i
-set CRM_DB_USER=...
-set CRM_DB_PASS=...
+set "MCP_DATABASE_CONFIG=C:\mcp-database\systems.yaml"
+for /f %i in ('py -3 -c "import secrets; print(secrets.token_hex(32))"') do set "MCP_DATABASE_HMAC_KEY=%i"
+set "CRM_DB_USER=..."
+set "CRM_DB_PASS=..."
 cd C:\mcp-database
 .venv\Scripts\python.exe scripts\kiem_tra_server.py
 ```
@@ -237,30 +237,30 @@ exec "$HOME/mcp-database/.venv/bin/python" -m mcp_database
 
 Lần đầu macOS có thể hỏi quyền truy cập Keychain cho tiến trình; chọn cho phép.
 
-Windows không có `sh`, nên dùng file `.cmd` (UTF-8 không BOM, không dấu cách thừa quanh dấu `=`). Đặt bí mật trong một file riêng và khóa quyền bằng ACL:
+Windows không có `sh`, nên dùng file `.cmd`. Đặt hai file này NGOÀI thư mục repo (ví dụ `C:\Users\<tên bạn>\.mcp-database\`) để không bao giờ lỡ commit bí mật, tạo bằng Notepad (lưu UTF-8) chứ đừng gõ bí mật vào dòng lệnh, vì lệnh sẽ nằm trong lịch sử PowerShell. Dạng `set "TÊN=giá trị"` (có ngoặc kép bao cả vế) an toàn với mật khẩu chứa `&`, `|`, `<`, `>`, `#`; vẫn cần tránh `%` và `!` trong mật khẩu.
 
 ```bat
-:: C:\mcp-database\env.cmd
-set MCP_DATABASE_CONFIG=C:\mcp-database\systems.yaml
-set MCP_DATABASE_HMAC_KEY=...
-set CRM_DB_USER=...
-set CRM_DB_PASS=...
+:: C:\Users\<tên bạn>\.mcp-database\env.cmd
+set "MCP_DATABASE_CONFIG=D:\source\mcp-database-adapter\systems.yaml"
+set "MCP_DATABASE_HMAC_KEY=<chuỗi hex 64 ký tự, sinh một lần rồi giữ nguyên>"
+set "CRM_DB_USER=<user>"
+set "CRM_DB_PASS=<mật khẩu>"
 ```
 
 ```bat
-:: C:\mcp-database\chay-mcp.cmd
+:: C:\Users\<tên bạn>\.mcp-database\chay-mcp.cmd
 @echo off
-call C:\mcp-database\env.cmd
-C:\mcp-database\.venv\Scripts\python.exe -m mcp_database
+call "%~dp0env.cmd"
+"D:\source\mcp-database-adapter\.venv\Scripts\python.exe" -m mcp_database
 ```
 
 ```powershell
 # chỉ tài khoản của bạn được đọc file chứa bí mật
-icacls C:\mcp-database\env.cmd /inheritance:r /grant:r "$($env:USERNAME):(R)"
-claude mcp add database -- cmd /c C:\mcp-database\chay-mcp.cmd
+icacls "$env:USERPROFILE\.mcp-database\env.cmd" /inheritance:r /grant:r "${env:USERNAME}:(R)"
+claude.cmd mcp add database -- cmd /c "$env:USERPROFILE\.mcp-database\chay-mcp.cmd"
 ```
 
-`cmd /c` là cách thông thường để Claude Code trên Windows khởi chạy file `.cmd`. Lưu ý mật khẩu có ký tự đặc biệt của cmd (`%`, `^`, `&`, `|`) cần được thoát trong `env.cmd`; nếu phiền, đặt biến ở mức người dùng bằng `setx CRM_DB_PASS "..."` (lưu trong registry của tài khoản, mở lại terminal mới có hiệu lực) rồi đăng ký thẳng `python.exe` như ở "Cách nhanh" mà không cần `-e` cho các bí mật. Cả hai cách này đều chưa được kiểm trên máy Windows ở dự án này.
+Khóa HMAC chỉ sinh một lần: đổi khóa thì mọi giá trị băm đổi theo (xem mục Xoay khóa HMAC). Gõ `claude.cmd` thay cho `claude` vì PowerShell mặc định chặn chạy `claude.ps1` ("running scripts is disabled on this system"); `claude.cmd` không bị chặn. Cách khác là cho phép script của người dùng hiện tại một lần: `Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned` (đây là thay đổi cấu hình máy, tự cân nhắc). `cmd /c` là cách thông thường để Claude Code trên Windows khởi chạy file `.cmd`. Mật khẩu có `%` hoặc `!` thì đặt biến ở mức người dùng bằng `setx` thay vì `env.cmd`. Cả hai cách đều chưa được kiểm trên Windows ở dự án này ngoài việc `kiem_tra_server.py` chạy được.
 
 ### Dùng chung trong nhóm qua `.mcp.json`
 

@@ -6,3 +6,6 @@ systems.yaml
 *.jsonl
 .pytest_cache/
 .ruff_cache/
+env.cmd
+*.env
+.env
