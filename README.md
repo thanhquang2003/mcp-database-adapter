@@ -1,5 +1,7 @@
 # mcp-database-adapter
 
+**Tiếng Việt** | [English](#english)
+
 MCP server chỉ đọc để Claude truy vấn dữ liệu trong replica Oracle và MariaDB. Dùng cho nhóm R&D và vận hành: đọc dữ liệu lịch sử người dùng, tìm điểm yếu của hệ thống, rồi đề xuất điều chỉnh có số liệu dẫn chứng.
 
 Một server dùng chung cho nhiều hệ thống. Mỗi hệ thống là một profile trong `systems.yaml`, gồm loại DB, cách kết nối, giới hạn riêng và một file mô tả dữ liệu để Claude đọc trước khi viết SQL. Thêm hệ thống mới không cần sửa code.
@@ -75,6 +77,8 @@ Rồi hỏi Claude, ví dụ: "Dùng database billing, tìm điểm yếu trong 
 
 ## Tài liệu
 
+Tài liệu chi tiết hiện viết bằng tiếng Việt.
+
 - `docs/huong-dan.md`: làm theo trình tự: cài đặt, nối Claude Code và Claude Desktop, cách dùng để phân tích, vận hành (thêm hệ thống, xoay khóa, audit log, tải lên replica), xử lý sự cố.
 - `docs/tham-khao.md`: tra cứu đầy đủ: mọi khóa cấu hình, cách server kiểm soát query, thông báo từ chối và cách sửa, giới hạn đã biết, checklist kiểm tra trên replica thật.
 - `docs/thiet-ke.md`: thiết kế gốc.
@@ -107,3 +111,121 @@ Test tích hợp MariaDB cần một DB thật (cách dựng bằng Docker ở `
 ## Tình trạng
 
 Đường MariaDB đã chạy với container MariaDB 10.11 thật. Đường Oracle mới kiểm bằng driver giả, nên coi là thử nghiệm cho tới khi bạn làm xong danh sách "Kiểm tra trên replica thật" ở cuối `docs/tham-khao.md`. Các thư viện `sqlglot` và `mcp` được ghim khoảng phiên bản vì lớp kiểm tra SQL phụ thuộc vào cấu trúc bên trong của chúng.
+
+---
+
+<a id="english"></a>
+
+# mcp-database-adapter (English)
+
+[Tiếng Việt](#mcp-database-adapter) | **English**
+
+A read-only MCP server that lets Claude query Oracle and MariaDB replicas. Built for R&D and operations teams: read historical user data, find weak points in a system, then propose changes backed by numbers.
+
+One server serves many systems. Each system is a profile in `systems.yaml`: the DB type, how to connect, its own limits, and a data description file that Claude reads before it writes any SQL. Adding a system takes configuration, not code.
+
+```
+Claude Code / Claude Desktop
+        │  MCP over stdio (Claude starts the server as a child process; no network port is opened)
+        ▼
+  mcp-database-adapter
+        │  validate SQL → mask sensitive columns → large-table rule → EXPLAIN → run with timeout
+        ▼
+  Oracle / MariaDB replica (read-only user)
+```
+
+## What it does to keep production safe
+
+The primary safeguard is a database user with read-only privileges, connected to a replica. The server is a backstop, and it keeps heavy queries from slowing the replica down:
+
+- Accepts exactly one `SELECT` or `WITH ... SELECT`. DML, DDL, row locks, functions with side effects, DB links and XML/XQuery functions are rejected.
+- Only runs SQL the server itself regenerated from the validated syntax tree, never the original string.
+- Sensitive columns are hashed (`hash`, so you can still count and join) or fully masked (`redact`). If the server cannot tell whether a column would leak, it rejects the whole query.
+- Large tables must be filtered on a time column, within a configurable maximum number of days.
+- `EXPLAIN` runs first; the query is rejected on a full scan of a large table or when the estimated cost or row count exceeds the thresholds.
+- Row limit on results, DB-side and client-side timeouts, and a cap on concurrent queries per system.
+- Raw database errors never reach Claude, only an error code. Every run is written to the audit log.
+
+The remaining limits (inferring values through repeated filtering, personal-data columns that were not declared, Oracle not yet verified against a real database) are stated plainly in `docs/tham-khao.md`, section 8.
+
+## The six tools
+
+| Tool | What it does |
+|---|---|
+| `list_systems` | Lists the systems you can reach (name and DB type only) |
+| `get_data_doc` | Returns the system's data description file; Claude must read it before writing SQL |
+| `describe_table` | Columns, indexes and estimated row count of a table |
+| `explain_query` | Runs every check and EXPLAIN but does not execute the statement |
+| `run_query` | Runs a validated SELECT and returns results with sensitive columns masked |
+| `profile_column` | Column statistics: non-null count, distinct values, most frequent values |
+
+## Quick start
+
+You need Python 3.11 or later and network access to the replica.
+
+```bash
+git clone git@github.com:thanhquang2003/mcp-database-adapter.git
+cd mcp-database-adapter
+python3 -m venv .venv
+.venv/bin/pip install -e .
+cp systems.example.yaml systems.yaml     # edit for your systems; git ignores this file
+```
+
+Create a read-only DB user (sample SQL for Oracle and MariaDB is in `docs/tham-khao.md`, section 3), write a data description file following `docs/example-data-doc.md`, then set the environment variables:
+
+```bash
+export MCP_DATABASE_CONFIG=$PWD/systems.yaml
+export MCP_DATABASE_HMAC_KEY=$(openssl rand -hex 32)   # required if any column is sensitive; keep it secret
+export BILLING_DB_USER=... BILLING_DB_PASS=...         # variable names are chosen per profile
+.venv/bin/python scripts/kiem_tra_server.py            # server starts and exposes all 6 tools
+```
+
+Connect it to Claude Code:
+
+```bash
+claude mcp add database \
+  -e MCP_DATABASE_CONFIG=$PWD/systems.yaml \
+  -e MCP_DATABASE_HMAC_KEY=... -e BILLING_DB_USER=... -e BILLING_DB_PASS=... \
+  -- $PWD/.venv/bin/python -m mcp_database
+```
+
+This stores the secrets in plain text in Claude Code's configuration. A better setup (a 0600 environment file plus a wrapper script, sharing the declaration across a team through `.mcp.json`, and Claude Desktop configuration) is in `docs/huong-dan.md`.
+
+Then ask Claude something like: "Using the billing database, find weak points in the top-up flow over the last 7 days. Read the data description first and run aggregate queries only."
+
+## Documentation
+
+The detailed documentation is currently written in Vietnamese.
+
+- `docs/huong-dan.md`: step-by-step guide: installation, connecting Claude Code and Claude Desktop, using it for analysis, operations (adding a system, rotating the key, audit log, replica load), troubleshooting.
+- `docs/tham-khao.md`: full reference: every configuration key, how the server controls queries, rejection messages and how to fix them, known limits, the "test on a real replica" checklist.
+- `docs/thiet-ke.md`: the original design.
+- `docs/example-data-doc.md`, `systems.example.yaml`: samples.
+
+## Code layout
+
+```
+src/mcp_database/
+  server.py        declares the 6 MCP tools, startup and environment-variable checks
+  service.py       validation → execution pipeline, concurrency limit, table-stats cache, audit
+  config.py        loads and validates systems.yaml
+  masking.py       masks sensitive columns
+  audit.py         JSONL audit log
+  guard/           parser.py (SQL validation), policy.py (large tables, time range, row limit), plan.py (EXPLAIN gate)
+  db/              base.py (connections, error sanitizing), oracle.py, mariadb.py
+scripts/kiem_tra_server.py   starts the server over stdio as a smoke check
+tests/                       670 unit tests; tests/integration runs against real databases
+```
+
+## Running the tests
+
+```bash
+.venv/bin/pip install -e '.[dev]'
+.venv/bin/pytest -m "not integration"
+```
+
+The MariaDB integration tests need a real database (how to start one with Docker is in `docs/tham-khao.md`, section 10); the Oracle tests need a real Oracle and are skipped by default.
+
+## Status
+
+The MariaDB path has run against a real MariaDB 10.11 container. The Oracle path has only been checked against test doubles, so treat it as experimental until you finish the "test on a real replica" checklist at the end of `docs/tham-khao.md`. The `sqlglot` and `mcp` libraries are pinned to a version range because the SQL validation layer depends on their internal structure.
