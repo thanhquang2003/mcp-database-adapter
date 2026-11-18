@@ -1,6 +1,7 @@
 """Nạp và kiểm tra systems.yaml."""
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
@@ -65,6 +66,21 @@ def _require(d: Mapping, key: str, typ: type, ctx: str) -> Any:
     if key not in d:
         raise ConfigError(f"Hệ thống '{ctx}': thiếu trường '{key}'")
     return _typed(d[key], typ, key, ctx)
+
+
+_ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _env_name(raw: Mapping, key: str, ctx: str) -> str:
+    """`user_env`/`password_env` phải là TÊN biến môi trường. Giá trị sai KHÔNG được đưa vào thông báo:
+    người dùng hay dán nhầm chính mật khẩu vào đây, và lỗi cấu hình sẽ in ra terminal/log."""
+    value = _require(raw, key, str, ctx)
+    if not _ENV_NAME_RE.fullmatch(value):
+        raise ConfigError(
+            f"Hệ thống '{ctx}': trường '{key}' phải là TÊN biến môi trường (chữ, số, dấu gạch dưới, "
+            "không bắt đầu bằng số; ví dụ BILLING_DB_PASS), không phải giá trị user/mật khẩu. "
+            "Đặt giá trị thật vào biến môi trường đó, không ghi vào systems.yaml.")
+    return value
 
 
 def _typed(value: Any, typ: type, key: str, ctx: str) -> Any:
@@ -175,8 +191,8 @@ def _parse_system(name: str, raw: Any, base: Path) -> SystemProfile:
         host=_require(raw, "host", str, name),
         port=port,
         database=_require(raw, "database", str, name),
-        user_env=_require(raw, "user_env", str, name),
-        password_env=_require(raw, "password_env", str, name),
+        user_env=_env_name(raw, "user_env", name),
+        password_env=_env_name(raw, "password_env", name),
         data_doc=(base / _require(raw, "data_doc", str, name)).resolve(),
         guard=_parse_guard(raw.get("guard"), name),
         is_replica=is_replica,

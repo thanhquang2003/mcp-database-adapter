@@ -139,3 +139,24 @@ def test_unknown_top_level_key_rejected(tmp_path):
         load_config(write_yaml(tmp_path, variant("audit_log: audit.jsonl", "audit_logs: audit.jsonl")))
     msg = str(e.value)
     assert "audit_logs" in msg and "audit_log" in msg and "systems" in msg
+
+
+@pytest.mark.parametrize("field,value", [
+    ("password_env", "Sup3r#Secret"),    # mật khẩu dán nhầm vào chỗ tên biến
+    ("password_env", "p@ss word"),
+    ("user_env", "my-db-user"),          # dấu gạch ngang không dùng được trong tên biến
+    ("user_env", "1USER"),               # tên biến không bắt đầu bằng chữ số
+    ("user_env", "A=B"),
+])
+def test_env_fields_must_be_variable_names_and_never_echo_value(tmp_path, field, value):
+    old = "    user_env: BILLING_USER\n" if field == "user_env" else "    password_env: BILLING_PASS\n"
+    new = f"    {field}: '{value}'\n"
+    with pytest.raises(ConfigError) as ei:
+        load_config(write_yaml(tmp_path, variant(old, new)))
+    message = str(ei.value)
+    assert field in message and "billing" in message and "TÊN biến môi trường" in message
+    assert value not in message  # giá trị có thể là bí mật, không được in ra
+
+
+def test_plain_variable_names_accepted(tmp_path):
+    load_config(write_yaml(tmp_path, variant("BILLING_USER", "my_db_user2")))

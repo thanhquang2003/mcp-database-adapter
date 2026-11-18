@@ -62,6 +62,8 @@ export BILLING_DB_USER=... BILLING_DB_PASS=...         # tên biến do từng p
 .venv/bin/python scripts/kiem_tra_server.py            # server lên được, thấy đủ 6 tool
 ```
 
+Lưu ý khi sửa `systems.yaml`: `user_env` và `password_env` là **tên** biến môi trường (ví dụ `BILLING_DB_USER`), không phải user hay mật khẩu. Giá trị thật đặt vào biến môi trường đó. Ghi nhầm mật khẩu vào đây sẽ bị server từ chối ngay (và không in giá trị ra). File mẫu có hai hệ thống, `billing` và `crm`, nên cần đặt biến cho cả hai; chỉ thử một hệ thống thì xóa khối còn lại khỏi `systems.yaml`.
+
 Nối vào Claude Code:
 
 ```bash
@@ -225,6 +227,8 @@ export MCP_DATABASE_HMAC_KEY=$(python3 -c "import secrets; print(secrets.token_h
 export BILLING_DB_USER=... BILLING_DB_PASS=...         # variable names are chosen per profile
 .venv/bin/python scripts/kiem_tra_server.py            # server starts and exposes all 6 tools
 ```
+
+When editing `systems.yaml`: `user_env` and `password_env` hold the **name** of an environment variable (for example `BILLING_DB_USER`), not the user or the password. Put the real value in that environment variable. A password written here by mistake is rejected immediately (and never printed). The sample file defines two systems, `billing` and `crm`, so set the variables for both; to try just one, delete the other block from `systems.yaml`.
 
 Connect it to Claude Code:
 
