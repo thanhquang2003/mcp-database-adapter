@@ -11,14 +11,43 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+from pathlib import Path
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+from mcp_database.config import ConfigError, load_config
+from mcp_database.server import CONFIG_ENV, DEFAULT_CONFIG, _check_env
+
 EXPECTED_TOOLS = {"list_systems", "get_data_doc", "describe_table", "explain_query", "run_query", "profile_column"}
 
 
+def precheck() -> int:
+    """Kiểm tra cấu hình và biến môi trường ngay trong tiến trình này, trước khi chạy server.
+
+    Làm bước này riêng vì thông báo lỗi từ stderr của tiến trình con không phải lúc nào cũng hiện ra
+    (nhất là trên Windows), nên không thể chỉ trông vào nó để biết thiếu biến nào.
+    """
+    path = Path(os.environ.get(CONFIG_ENV) or DEFAULT_CONFIG)
+    try:
+        config = load_config(path)
+    except ConfigError as exc:
+        print(f"Cấu hình lỗi: {exc}", file=sys.stderr)
+        return 1
+    except Exception:
+        print(f"Không đọc được file cấu hình: {path.resolve()}", file=sys.stderr)
+        return 1
+    try:
+        _check_env(config)  # tự in TÊN biến còn thiếu (không in giá trị) rồi thoát mã 1
+    except SystemExit as exc:
+        return int(exc.code or 1)
+    print(f"Cấu hình hợp lệ: {path.resolve()} ({len(config.systems)} hệ thống: {', '.join(config.systems)})")
+    return 0
+
+
 async def check() -> int:
+    if (code := precheck()) != 0:
+        return code
     params = StdioServerParameters(command=sys.executable, args=["-m", "mcp_database"], env=dict(os.environ))
     async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
         await session.initialize()
