@@ -149,6 +149,19 @@ cd C:\mcp-database
 .venv\Scripts\python.exe scripts\kiem_tra_server.py
 ```
 
+Nếu dấu nhắc của bạn là `C:\...>` (không có chữ `PS`) thì bạn đang ở `cmd`, và các lệnh `$env:...` sẽ báo "The filename, directory name, or volume label syntax is incorrect". Gõ `powershell` để chuyển, hoặc dùng bản `cmd` (không đặt ngoặc kép hay dấu cách quanh `=`; trong file `.bat` viết `%%i` thay cho `%i`):
+
+```bat
+set MCP_DATABASE_CONFIG=C:\mcp-database\systems.yaml
+for /f %i in ('py -3 -c "import secrets; print(secrets.token_hex(32))"') do set MCP_DATABASE_HMAC_KEY=%i
+set CRM_DB_USER=...
+set CRM_DB_PASS=...
+cd C:\mcp-database
+.venv\Scripts\python.exe scripts\kiem_tra_server.py
+```
+
+Trong cả hai trường hợp, biến phải được đặt TRONG CÙNG cửa sổ chạy script: mở cửa sổ mới là mất biến. Nếu script báo "Không kết nối được tới server" mà phía trên không có dòng lỗi nào của server, kiểm tra `MCP_DATABASE_CONFIG` có trỏ đúng file `systems.yaml` đang tồn tại không (`echo %MCP_DATABASE_CONFIG%` trong `cmd`, `$env:MCP_DATABASE_CONFIG` trong PowerShell).
+
 Script khởi động server qua stdio đúng như Claude làm, liệt kê 6 tool và gọi `list_systems`. Nó không chạm vào DB, nên chỉ chứng minh server lên được và cấu hình đọc được. Nếu in `Tool: describe_table, explain_query, ...` và danh sách hệ thống thì ổn. Nếu lỗi, thông báo của server nằm ngay phía trên dòng gợi ý.
 
 Việc kiểm tra kết nối DB thật làm ở mục 6, từ trong Claude.

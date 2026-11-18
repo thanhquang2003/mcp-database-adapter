@@ -107,6 +107,18 @@ claude mcp add database `
   -- C:\mcp-database\.venv\Scripts\python.exe -m mcp_database
 ```
 
+**Bạn đang ở `cmd` (dấu nhắc dạng `C:\...>`, không có chữ `PS`) thay vì PowerShell?** Các lệnh `$env:...` ở trên chỉ chạy trong PowerShell; gõ vào `cmd` sẽ báo "The filename, directory name, or volume label syntax is incorrect". Có hai cách: gõ `powershell` để chuyển sang PowerShell rồi làm lại, hoặc dùng bản `cmd` này (biến chỉ có hiệu lực trong cửa sổ hiện tại; không đặt dấu ngoặc kép hay dấu cách quanh `=`):
+
+```bat
+set MCP_DATABASE_CONFIG=C:\mcp-database\systems.yaml
+for /f %i in ('py -3 -c "import secrets; print(secrets.token_hex(32))"') do set MCP_DATABASE_HMAC_KEY=%i
+set BILLING_DB_USER=...
+set BILLING_DB_PASS=...
+.venv\Scripts\python.exe scripts\kiem_tra_server.py
+```
+
+Trong file `.bat` thì viết `%%i` thay cho `%i`. Cách đăng ký với Claude trong `cmd`: một dòng, `claude mcp add database -e MCP_DATABASE_CONFIG=C:\mcp-database\systems.yaml -e MCP_DATABASE_HMAC_KEY=... -e BILLING_DB_USER=... -e BILLING_DB_PASS=... -- C:\mcp-database\.venv\Scripts\python.exe -m mcp_database`.
+
 Nếu bạn chạy Claude Code trong WSL thì làm theo phần Linux bên trong WSL. Trên macOS và Windows, mật khẩu không nên để nguyên văn trong cấu hình của Claude: dùng Keychain (macOS) hoặc file `.cmd` bị khóa ACL (Windows), chi tiết và cấu hình Claude Desktop ở `docs/huong-dan.md`, mục 3 và 5. Dự án mới được kiểm với DB thật trên Linux; macOS và Windows chưa được kiểm trực tiếp, nên chạy `scripts/kiem_tra_server.py` trước khi nối Claude.
 
 ## Tài liệu
@@ -258,6 +270,18 @@ claude mcp add database `
   -e MCP_DATABASE_HMAC_KEY=... -e BILLING_DB_USER=... -e BILLING_DB_PASS=... `
   -- C:\mcp-database\.venv\Scripts\python.exe -m mcp_database
 ```
+
+**Are you in `cmd` (a prompt like `C:\...>`, with no `PS`) instead of PowerShell?** The `$env:...` lines above only work in PowerShell; typing them into `cmd` gives "The filename, directory name, or volume label syntax is incorrect". Either type `powershell` to switch and run them again, or use this `cmd` version (the variables last only for the current window; no quotes or spaces around `=`):
+
+```bat
+set MCP_DATABASE_CONFIG=C:\mcp-database\systems.yaml
+for /f %i in ('py -3 -c "import secrets; print(secrets.token_hex(32))"') do set MCP_DATABASE_HMAC_KEY=%i
+set BILLING_DB_USER=...
+set BILLING_DB_PASS=...
+.venv\Scripts\python.exe scripts\kiem_tra_server.py
+```
+
+In a `.bat` file write `%%i` instead of `%i`. To register with Claude from `cmd`, use a single line: `claude mcp add database -e MCP_DATABASE_CONFIG=C:\mcp-database\systems.yaml -e MCP_DATABASE_HMAC_KEY=... -e BILLING_DB_USER=... -e BILLING_DB_PASS=... -- C:\mcp-database\.venv\Scripts\python.exe -m mcp_database`.
 
 If you run Claude Code inside WSL, follow the Linux steps inside WSL. On macOS and Windows, don't leave the password in plain text in Claude's configuration: use the Keychain (macOS) or an ACL-locked `.cmd` file (Windows). Details, and Claude Desktop configuration, are in `docs/huong-dan.md`, sections 3 and 5. The project has so far been verified against a real database only on Linux; macOS and Windows have not been tested directly, so run `scripts/kiem_tra_server.py` before connecting Claude.
 

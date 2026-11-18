@@ -34,15 +34,27 @@ async def check() -> int:
     return 0
 
 
+def _leaf_errors(exc: BaseException) -> list[BaseException]:
+    """Trải phẳng ExceptionGroup (anyio gói lỗi vào nhóm) để thấy nguyên nhân thật."""
+    if isinstance(exc, BaseExceptionGroup):
+        return [leaf for sub in exc.exceptions for leaf in _leaf_errors(sub)]
+    return [exc]
+
+
 def main() -> int:
     try:
         return asyncio.run(check())
     except BaseException as exc:
         if isinstance(exc, KeyboardInterrupt):
             raise
+        print("\nKhông kết nối được tới server. Chi tiết phía client:", file=sys.stderr)
+        for leaf in _leaf_errors(exc):
+            print(f"  - {type(leaf).__name__}: {leaf}", file=sys.stderr)
         print(
-            "\nServer không khởi động hoặc không trả lời được. Thông báo lỗi của server (tên biến "
-            "môi trường còn thiếu, lỗi cấu hình...) nằm ngay phía trên, ở stderr của nó.",
+            "Thông báo lỗi của chính server (tên biến môi trường còn thiếu, lỗi cấu hình...), nếu có, "
+            "nằm phía trên. Không thấy gì phía trên thì kiểm tra: đã đặt MCP_DATABASE_CONFIG chưa, "
+            "file systems.yaml có tồn tại không, và biến môi trường có được đặt TRONG CÙNG cửa sổ "
+            "terminal đang chạy script này không.",
             file=sys.stderr,
         )
         return 1
