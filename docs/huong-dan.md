@@ -1,6 +1,6 @@
 # Hướng dẫn sử dụng, vận hành và tích hợp Claude
 
-Tài liệu này đi từ đầu đến cuối: dựng server, nối Claude vào, dùng để phân tích, rồi vận hành lâu dài. README.md là tài liệu tra cứu (mọi khóa cấu hình, mọi lý do từ chối); file này là trình tự làm việc. Chỗ nào cần chi tiết hơn thì có chỉ sang README.
+Tài liệu này đi từ đầu đến cuối: dựng server, nối Claude vào, dùng để phân tích, rồi vận hành lâu dài. docs/tham-khao.md là tài liệu tra cứu (mọi khóa cấu hình, mọi lý do từ chối); file này là trình tự làm việc. Chỗ nào cần chi tiết hơn thì có chỉ sang docs/tham-khao.md.
 
 Một điều cần nhớ trước khi bắt đầu: lớp bảo vệ chính là user database chỉ có quyền đọc, nối vào replica. Server kiểm tra query để replica không bị làm nặng và để dữ liệu cá nhân không đi thẳng vào Claude, nhưng nó là lớp dự phòng. Đừng cấp quyền rộng cho user DB rồi trông vào server.
 
@@ -22,7 +22,7 @@ Không có cổng mạng nào được mở. Mỗi người dùng Claude chạy 
 
 Bốn việc, theo thứ tự quan trọng:
 
-1. User database chỉ đọc cho từng hệ thống, nối vào replica (không phải primary). SQL tạo user cho Oracle và MariaDB nằm ở README mục 3.
+1. User database chỉ đọc cho từng hệ thống, nối vào replica (không phải primary). SQL tạo user cho Oracle và MariaDB nằm ở docs/tham-khao.md mục 3.
 2. File mô tả dữ liệu cho từng hệ thống. Đây là phần quyết định chất lượng phân tích, xem mục 4.
 3. Danh sách cột chứa dữ liệu cá nhân (số thuê bao, IMSI, tên, địa chỉ, email...). Server chỉ che những cột được khai báo; cột không khai báo đi tới Claude ở dạng rõ, kể cả các cột văn bản tự do như ghi chú.
 4. Một khóa HMAC ngẫu nhiên, ít nhất 16 byte, riêng cho mỗi lần triển khai: `openssl rand -hex 32`. Khóa này dùng để băm cột kiểu `hash`; ai có nó có thể dò ngược số gốc từ giá trị băm, nên giữ như mật khẩu.
@@ -39,7 +39,7 @@ python3 -m venv .venv
 cp systems.example.yaml systems.yaml
 ```
 
-`systems.yaml` bị git bỏ qua, nên sửa thoải mái. Các thư viện được ghim khoảng phiên bản trong `pyproject.toml` (lý do ở README mục 1); đừng nâng `sqlglot` hay `mcp` mà không chạy lại bộ test.
+`systems.yaml` bị git bỏ qua, nên sửa thoải mái. Các thư viện được ghim khoảng phiên bản trong `pyproject.toml` (lý do ở docs/tham-khao.md mục 1); đừng nâng `sqlglot` hay `mcp` mà không chạy lại bộ test.
 
 ## 4. Cấu hình một hệ thống
 
@@ -217,7 +217,7 @@ Khởi động lại Claude Desktop. Trên Windows không có `sh`, nên dùng t
 
 ## 6. Kiểm tra trên replica thật
 
-Làm một lần cho mỗi hệ thống trước khi dùng thật, trong một phiên Claude. Danh sách đầy đủ, nhất là phần Oracle, ở README cuối file. Bản rút gọn:
+Làm một lần cho mỗi hệ thống trước khi dùng thật, trong một phiên Claude. Danh sách đầy đủ, nhất là phần Oracle, ở docs/tham-khao.md cuối file. Bản rút gọn:
 
 1. `describe_table` trên một bảng có thật: thấy cột, chỉ mục, số dòng ước tính.
 2. `run_query` một câu đếm có lọc thời gian: ví dụ `SELECT COUNT(*) FROM events WHERE created_at >= DATE '2026-11-01' AND created_at < DATE '2026-11-03'`. Cần trả về một số.
@@ -225,7 +225,7 @@ Làm một lần cho mỗi hệ thống trước khi dùng thật, trong một p
 4. `run_query` chọn một cột nhạy cảm: giá trị phải ra dạng băm 16 ký tự hoặc `***`, và `notes` nói rõ cột nào đã bị che.
 5. Đăng nhập bằng chính user chỉ đọc đó bằng công cụ DB bình thường và thử `INSERT` hoặc `CREATE TABLE`: phải bị DB từ chối. Đây là bước quan trọng nhất, vì nó kiểm tra lớp bảo vệ chính chứ không phải lớp dự phòng.
 
-Với Oracle, đường truy cập chỉ mới được kiểm bằng test giả, nên coi là thử nghiệm cho tới khi các mục Oracle trong checklist README đạt.
+Với Oracle, đường truy cập chỉ mới được kiểm bằng test giả, nên coi là thử nghiệm cho tới khi các mục Oracle trong checklist docs/tham-khao.md đạt.
 
 ## 7. Dùng để phân tích
 
@@ -243,7 +243,7 @@ Vài thói quen giúp tránh bực mình:
 
 - Luôn nêu khoảng thời gian. Với bảng lớn, server bắt buộc có cả mốc đầu và mốc cuối trong `WHERE`, tối đa `max_range_days` ngày, và chỉ chấp nhận mốc dạng ngày cụ thể hoặc `SYSDATE`/`NOW()` trừ vài ngày. Nếu Claude viết kiểu khác, nó sẽ bị từ chối kèm gợi ý và tự sửa.
 - Kết quả bị cắt ở `max_rows` dòng (mặc định 1000). Muốn cái nhìn tổng thể thì để Claude gộp (`GROUP BY`), đừng bắt nó liệt kê.
-- Khi một query bị từ chối, đọc `hint` trong phản hồi: nó nói cách sửa. Danh sách các thông báo thường gặp và cách xử lý ở README mục 9.
+- Khi một query bị từ chối, đọc `hint` trong phản hồi: nó nói cách sửa. Danh sách các thông báo thường gặp và cách xử lý ở docs/tham-khao.md mục 9.
 - Giá trị băm dùng được để đếm, nhóm và ghép trong cùng một lần triển khai, nhưng không đọc ngược được. Cần tra một thuê bao cụ thể thì lọc `WHERE` theo số thật; server không che điều kiện lọc, chỉ che cột trong kết quả.
 - Dữ liệu trong DB có thể chứa chữ nghe như chỉ thị (một ghi chú do người dùng nhập vào, chẳng hạn). Claude đọc nó như dữ liệu, nhưng nếu thấy Claude bất ngờ làm việc không liên quan đến yêu cầu của bạn sau khi đọc một kết quả, dừng lại và xem kết quả đó. Với dữ liệu thật, nên chạy phiên phân tích không bật công cụ gửi dữ liệu ra ngoài (tìm web, gọi API...), hoặc bật xác nhận cho chúng.
 
@@ -281,7 +281,7 @@ Chỉ nâng cận phiên bản `sqlglot` hoặc `mcp` trong `pyproject.toml` khi
 
 ### Audit log
 
-Mỗi lần `run_query` (và hai câu của `profile_column`) ghi một dòng JSON, kể cả khi bị từ chối. `explain_query` và `describe_table` không ghi. Các trường nằm ở README mục 7. File này chứa nguyên văn SQL, nên có thể có số thuê bao hay giá trị nhạy cảm do người dùng gõ vào `WHERE`: giữ quyền 0600, đặt ngoài thư mục được chia sẻ hay sao lưu rộng, và xóa theo chính sách của nhóm.
+Mỗi lần `run_query` (và hai câu của `profile_column`) ghi một dòng JSON, kể cả khi bị từ chối. `explain_query` và `describe_table` không ghi. Các trường nằm ở docs/tham-khao.md mục 7. File này chứa nguyên văn SQL, nên có thể có số thuê bao hay giá trị nhạy cảm do người dùng gõ vào `WHERE`: giữ quyền 0600, đặt ngoài thư mục được chia sẻ hay sao lưu rộng, và xóa theo chính sách của nhóm.
 
 Một số truy vấn hữu ích (cần `jq`):
 
@@ -325,7 +325,7 @@ Khi nhiều người phàn nàn "hệ thống đang bận", đó là giới hạ
 | Server mất ~10 giây mới sẵn sàng | Import SDK `mcp` chậm trên một số máy | Bình thường; chỉ ảnh hưởng lúc khởi động |
 | Tool trả "Lỗi từ cơ sở dữ liệu (mã ...)" | Lỗi từ DB, server cố ý giấu nội dung chi tiết để lỗi không làm lộ dữ liệu | Xem mã trong audit log (`code`) rồi tra log phía DB |
 | Tool báo "hệ thống đang bận" | Đủ `max_concurrent` query đang chạy | Chờ rồi thử lại; đừng ép Claude chạy song song |
-| Query bị từ chối với `hint` | Một luật của server | Làm theo `hint`; bảng thông báo thường gặp ở README mục 9 |
+| Query bị từ chối với `hint` | Một luật của server | Làm theo `hint`; bảng thông báo thường gặp ở docs/tham-khao.md mục 9 |
 | Bảng lớn nhưng không bị bắt buộc lọc thời gian | Không nhận ra bảng lớn (view, chưa có thống kê, tên không có schema trên Oracle) | Khai báo bảng trong `guard.tables` kèm `time_column` |
 | Cột nhạy cảm vẫn thấy ở dạng rõ | Cột không được khai báo, hoặc truy vấn qua view/synonym | Khai báo cả tên view/synonym đó trong `sensitive_columns` |
 | Query hợp lệ bị từ chối "cú pháp không hỗ trợ" | Câu dùng cấu trúc mà thư viện phân tích SQL không sinh lại chính xác cho DB đích (ví dụ PIVOT trên MariaDB, bảng temporal) | Viết lại bằng cách khác (CASE + GROUP BY thay cho PIVOT) |
@@ -340,5 +340,5 @@ Khi nhiều người phàn nàn "hệ thống đang bận", đó là giới hạ
 - Audit log đặt ở nơi an toàn, quyền 0600, có chính sách xoay vòng và xóa.
 - Giới hạn tài nguyên cho user DB đã đặt ở phía DB.
 - Ngưỡng EXPLAIN đã chỉnh bằng số liệu thật của replica.
-- Với Oracle: đã làm xong các mục Oracle trong checklist cuối README.
+- Với Oracle: đã làm xong các mục Oracle trong checklist cuối docs/tham-khao.md.
 - Người dùng biết: kết quả chỉ nên đưa cho người có quyền xem dữ liệu đó, và phiên phân tích dữ liệu thật không bật công cụ gửi dữ liệu ra ngoài.
