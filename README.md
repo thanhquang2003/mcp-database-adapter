@@ -123,7 +123,7 @@ set "BILLING_DB_PASS=..."
 
 Trong file `.bat` thì viết `%%i` thay cho `%i`. Cách đăng ký với Claude trong `cmd`: một dòng, `claude mcp add database -e MCP_DATABASE_CONFIG=C:\mcp-database\systems.yaml -e MCP_DATABASE_HMAC_KEY=... -e BILLING_DB_USER=... -e BILLING_DB_PASS=... -- C:\mcp-database\.venv\Scripts\python.exe -m mcp_database`.
 
-Nếu bạn chạy Claude Code trong WSL thì làm theo phần Linux bên trong WSL. Trên macOS và Windows, mật khẩu không nên để nguyên văn trong cấu hình của Claude: dùng Keychain (macOS) hoặc file `.cmd` bị khóa ACL (Windows), chi tiết và cấu hình Claude Desktop ở `docs/huong-dan.md`, mục 3 và 5. Dự án mới được kiểm với DB thật trên Linux; macOS và Windows chưa được kiểm trực tiếp, nên chạy `scripts/kiem_tra_server.py` trước khi nối Claude.
+Nếu bạn chạy Claude Code trong WSL thì làm theo phần Linux bên trong WSL. Trên macOS và Windows, mật khẩu không nên để nguyên văn trong cấu hình của Claude: dùng Keychain (macOS) hoặc file `.cmd` bị khóa ACL (Windows), chi tiết và cấu hình Claude Desktop ở `docs/huong-dan.md`, mục 3 và 5. Đã chạy thành công trên Windows (cài đặt, kiểm tra server, đăng ký với Claude Code); macOS chưa được kiểm trực tiếp, nên chạy `scripts/kiem_tra_server.py` trước khi nối Claude.
 
 ## Tài liệu
 
@@ -160,7 +160,7 @@ Test tích hợp MariaDB cần một DB thật (cách dựng bằng Docker ở `
 
 ## Tình trạng
 
-Đường MariaDB đã chạy với container MariaDB 10.11 thật. Đường Oracle mới kiểm bằng driver giả, nên coi là thử nghiệm cho tới khi bạn làm xong danh sách "Kiểm tra trên replica thật" ở cuối `docs/tham-khao.md`. Các thư viện `sqlglot` và `mcp` được ghim khoảng phiên bản vì lớp kiểm tra SQL phụ thuộc vào cấu trúc bên trong của chúng.
+Đường MariaDB đã chạy với container MariaDB 10.11 thật. Nền tảng: Linux và Windows đã chạy được, macOS chưa kiểm. Đường Oracle mới kiểm bằng driver giả, nên coi là thử nghiệm cho tới khi bạn làm xong danh sách "Kiểm tra trên replica thật" ở cuối `docs/tham-khao.md`. Các thư viện `sqlglot` và `mcp` được ghim khoảng phiên bản vì lớp kiểm tra SQL phụ thuộc vào cấu trúc bên trong của chúng.
 
 ---
 
@@ -291,7 +291,7 @@ set "BILLING_DB_PASS=..."
 
 In a `.bat` file write `%%i` instead of `%i`. To register with Claude from `cmd`, use a single line: `claude mcp add database -e MCP_DATABASE_CONFIG=C:\mcp-database\systems.yaml -e MCP_DATABASE_HMAC_KEY=... -e BILLING_DB_USER=... -e BILLING_DB_PASS=... -- C:\mcp-database\.venv\Scripts\python.exe -m mcp_database`.
 
-If you run Claude Code inside WSL, follow the Linux steps inside WSL. On macOS and Windows, don't leave the password in plain text in Claude's configuration: use the Keychain (macOS) or an ACL-locked `.cmd` file (Windows). Details, and Claude Desktop configuration, are in `docs/huong-dan.md`, sections 3 and 5. The project has so far been verified against a real database only on Linux; macOS and Windows have not been tested directly, so run `scripts/kiem_tra_server.py` before connecting Claude.
+If you run Claude Code inside WSL, follow the Linux steps inside WSL. On macOS and Windows, don't leave the password in plain text in Claude's configuration: use the Keychain (macOS) or an ACL-locked `.cmd` file (Windows). Details, and Claude Desktop configuration, are in `docs/huong-dan.md`, sections 3 and 5. It has run successfully on Windows (installation, server check, registration with Claude Code); macOS has not been tested directly, so run `scripts/kiem_tra_server.py` before connecting Claude.
 
 ## Documentation
 
@@ -328,4 +328,4 @@ The MariaDB integration tests need a real database (how to start one with Docker
 
 ## Status
 
-The MariaDB path has run against a real MariaDB 10.11 container. The Oracle path has only been checked against test doubles, so treat it as experimental until you finish the "test on a real replica" checklist at the end of `docs/tham-khao.md`. The `sqlglot` and `mcp` libraries are pinned to a version range because the SQL validation layer depends on their internal structure.
+The MariaDB path has run against a real MariaDB 10.11 container. Platforms: Linux and Windows have run it, macOS has not been tested. The Oracle path has only been checked against test doubles, so treat it as experimental until you finish the "test on a real replica" checklist at the end of `docs/tham-khao.md`. The `sqlglot` and `mcp` libraries are pinned to a version range because the SQL validation layer depends on their internal structure.

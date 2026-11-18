@@ -29,7 +29,7 @@ Bốn việc, theo thứ tự quan trọng:
 
 ## 3. Cài đặt
 
-Cần Python 3.11 trở lên và mạng tới replica. Server chỉ dùng thư viện Python thuần cho cả hai DB (Oracle chạy ở chế độ thin, không cần cài Oracle Client), nên các bước giống nhau trên mọi hệ điều hành; chỉ khác cách gõ lệnh. Đường MariaDB đã được kiểm với DB thật trên Linux. macOS và Windows chưa được kiểm trực tiếp ở dự án này, nên làm xong mục 4 ("Chạy thử") rồi mới đi tiếp.
+Cần Python 3.11 trở lên và mạng tới replica. Server chỉ dùng thư viện Python thuần cho cả hai DB (Oracle chạy ở chế độ thin, không cần cài Oracle Client), nên các bước giống nhau trên mọi hệ điều hành; chỉ khác cách gõ lệnh. Đã kiểm: đường MariaDB với DB thật trên Linux; Windows (PowerShell) từ cài đặt, chạy thử server đến đăng ký với Claude Code đã chạy thành công. macOS chưa được kiểm trực tiếp, nên làm xong mục 4 ("Chạy thử") rồi mới đi tiếp.
 
 ### Linux
 
@@ -260,7 +260,7 @@ icacls "$env:USERPROFILE\.mcp-database\env.cmd" /inheritance:r /grant:r "${env:U
 claude.cmd mcp add database -- cmd /c "$env:USERPROFILE\.mcp-database\chay-mcp.cmd"
 ```
 
-Khóa HMAC chỉ sinh một lần: đổi khóa thì mọi giá trị băm đổi theo (xem mục Xoay khóa HMAC). Gõ `claude.cmd` thay cho `claude` vì PowerShell mặc định chặn chạy `claude.ps1` ("running scripts is disabled on this system"); `claude.cmd` không bị chặn. Cách khác là cho phép script của người dùng hiện tại một lần: `Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned` (đây là thay đổi cấu hình máy, tự cân nhắc). `cmd /c` là cách thông thường để Claude Code trên Windows khởi chạy file `.cmd`. Mật khẩu có `%` hoặc `!` thì đặt biến ở mức người dùng bằng `setx` thay vì `env.cmd`. Cả hai cách đều chưa được kiểm trên Windows ở dự án này ngoài việc `kiem_tra_server.py` chạy được.
+Khóa HMAC chỉ sinh một lần: đổi khóa thì mọi giá trị băm đổi theo (xem mục Xoay khóa HMAC). Gõ `claude.cmd` thay cho `claude` vì PowerShell mặc định chặn chạy `claude.ps1` ("running scripts is disabled on this system"); `claude.cmd` không bị chặn. Cách khác là cho phép script của người dùng hiện tại một lần: `Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned` (đây là thay đổi cấu hình máy, tự cân nhắc). `cmd /c` là cách thông thường để Claude Code trên Windows khởi chạy file `.cmd`. Mật khẩu có `%` hoặc `!` thì đặt biến ở mức người dùng bằng `setx` thay vì `env.cmd`. Cách đăng ký bằng `env.cmd` + `chay-mcp.cmd` ở trên đã được xác nhận chạy được trên Windows; cách `setx` thì chưa được thử.
 
 ### Dùng chung trong nhóm qua `.mcp.json`
 
