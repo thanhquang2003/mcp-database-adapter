@@ -27,8 +27,11 @@ class AuditLog:
         except FileExistsError:
             fd = os.open(self._path, os.O_WRONLY | os.O_APPEND | nofollow)
         else:
-            os.fchmod(fd, 0o600)  # umask chỉ bớt quyền; vẫn cố định đúng 0600
-        return os.fdopen(fd, "a", encoding="utf-8")
+            # umask chỉ bớt quyền; vẫn cố định đúng 0600. Windows (Python < 3.13) không có
+            # os.fchmod và quyền file đi theo ACL, nên bỏ qua ở đó thay vì làm mất bản ghi đầu.
+            if hasattr(os, "fchmod"):
+                os.fchmod(fd, 0o600)
+        return os.fdopen(fd, "a", encoding="utf-8", newline="\n")  # JSONL luôn xuống dòng bằng \n
 
     def write(self, event: dict) -> None:
         if self._path is None:

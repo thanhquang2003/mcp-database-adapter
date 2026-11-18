@@ -25,19 +25,57 @@ Bốn việc, theo thứ tự quan trọng:
 1. User database chỉ đọc cho từng hệ thống, nối vào replica (không phải primary). SQL tạo user cho Oracle và MariaDB nằm ở docs/tham-khao.md mục 3.
 2. File mô tả dữ liệu cho từng hệ thống. Đây là phần quyết định chất lượng phân tích, xem mục 4.
 3. Danh sách cột chứa dữ liệu cá nhân (số thuê bao, IMSI, tên, địa chỉ, email...). Server chỉ che những cột được khai báo; cột không khai báo đi tới Claude ở dạng rõ, kể cả các cột văn bản tự do như ghi chú.
-4. Một khóa HMAC ngẫu nhiên, ít nhất 16 byte, riêng cho mỗi lần triển khai: `openssl rand -hex 32`. Khóa này dùng để băm cột kiểu `hash`; ai có nó có thể dò ngược số gốc từ giá trị băm, nên giữ như mật khẩu.
+4. Một khóa HMAC ngẫu nhiên, ít nhất 16 byte, riêng cho mỗi lần triển khai. Lệnh sau chạy được trên Linux, macOS và Windows: `python3 -c "import secrets; print(secrets.token_hex(32))"` (trên Windows dùng `py -3 -c ...` hoặc `python -c ...`). Khóa này dùng để băm cột kiểu `hash`; ai có nó có thể dò ngược số gốc từ giá trị băm, nên giữ như mật khẩu.
 
 ## 3. Cài đặt
 
-Cần Python 3.11 trở lên và mạng tới replica.
+Cần Python 3.11 trở lên và mạng tới replica. Server chỉ dùng thư viện Python thuần cho cả hai DB (Oracle chạy ở chế độ thin, không cần cài Oracle Client), nên các bước giống nhau trên mọi hệ điều hành; chỉ khác cách gõ lệnh. Đường MariaDB đã được kiểm với DB thật trên Linux. macOS và Windows chưa được kiểm trực tiếp ở dự án này, nên làm xong mục 4 ("Chạy thử") rồi mới đi tiếp.
+
+### Linux
 
 ```bash
-git clone <địa chỉ repo> /opt/mcp-database
+git clone git@github.com:thanhquang2003/mcp-database-adapter.git /opt/mcp-database
 cd /opt/mcp-database
 python3 -m venv .venv
-.venv/bin/pip install -e .
+.venv/bin/python -m pip install -e .
 cp systems.example.yaml systems.yaml
 ```
+
+### macOS (MacBook)
+
+Cài Python và git bằng Homebrew nếu chưa có (bỏ qua nếu đã có Python 3.11 trở lên):
+
+```bash
+brew install python@3.12 git
+```
+
+Rồi cài giống Linux. Dùng thư mục trong home của bạn thay cho `/opt` để khỏi cần `sudo`:
+
+```bash
+git clone git@github.com:thanhquang2003/mcp-database-adapter.git ~/mcp-database
+cd ~/mcp-database
+python3 -m venv .venv
+.venv/bin/python -m pip install -e .
+cp systems.example.yaml systems.yaml
+```
+
+Nếu `python3 --version` báo dưới 3.11 (Python hệ thống của macOS thường cũ), gọi thẳng bản của Homebrew: `/opt/homebrew/bin/python3.12` trên máy Apple Silicon, `/usr/local/bin/python3.12` trên máy Intel. Phần còn lại của tài liệu dùng `~/mcp-database` thay cho `/opt/mcp-database`.
+
+### Windows
+
+Làm trong PowerShell. Cài Python 3.11+ và git nếu chưa có (từ python.org và git-scm.com, hoặc `winget install Python.Python.3.12 Git.Git`), rồi mở lại PowerShell để nhận PATH mới:
+
+```powershell
+git clone git@github.com:thanhquang2003/mcp-database-adapter.git C:\mcp-database
+cd C:\mcp-database
+py -3.12 -m venv .venv
+.venv\Scripts\python.exe -m pip install -e .
+Copy-Item systems.example.yaml systems.yaml
+```
+
+Không cần kích hoạt venv. Ở những chỗ tài liệu gọi `.venv/bin/python` (Linux, macOS), trên Windows gọi `.venv\Scripts\python.exe`. Hãy dùng đường dẫn đầy đủ và đặt thư mục cài ở nơi không có dấu cách trong đường dẫn (ví dụ `C:\mcp-database`) cho đỡ lỗi trích dẫn. Nếu bạn đã dùng WSL và chạy Claude Code trong WSL, hãy làm theo phần Linux ở trong WSL; khi đó mọi thứ (Python, server, Claude Code) đều nằm trong WSL, và replica phải nối được từ WSL.
+
+Ghi chú về quyền file: cách đặt quyền `0600` ở các phần sau là của Linux/macOS. Trên Windows quyền đi theo ACL: mục 5 có lệnh `icacls` cho file chứa bí mật, và thư mục chứa audit log (`audit_log` trong `systems.yaml`) nên được khóa tương tự để chỉ tài khoản của bạn đọc được. Server không tự đặt ACL.
 
 `systems.yaml` bị git bỏ qua, nên sửa thoải mái. Các thư viện được ghim khoảng phiên bản trong `pyproject.toml` (lý do ở docs/tham-khao.md mục 1); đừng nâng `sqlglot` hay `mcp` mà không chạy lại bộ test.
 
@@ -91,12 +129,24 @@ Thiếu biến nào thì server in tên biến đó ra stderr và thoát với m
 
 ### Chạy thử trước khi nối Claude
 
+Linux và macOS (macOS thay `/opt/mcp-database` bằng `~/mcp-database`):
+
 ```bash
 export MCP_DATABASE_CONFIG=/opt/mcp-database/systems.yaml
 export MCP_DATABASE_HMAC_KEY=...        # khóa ở mục 2
 export CRM_DB_USER=... CRM_DB_PASS=...
 cd /opt/mcp-database
 .venv/bin/python scripts/kiem_tra_server.py
+```
+
+Windows (PowerShell; biến chỉ có hiệu lực trong cửa sổ này):
+
+```powershell
+$env:MCP_DATABASE_CONFIG = "C:\mcp-database\systems.yaml"
+$env:MCP_DATABASE_HMAC_KEY = "..."      # khóa ở mục 2
+$env:CRM_DB_USER = "..."; $env:CRM_DB_PASS = "..."
+cd C:\mcp-database
+.venv\Scripts\python.exe scripts\kiem_tra_server.py
 ```
 
 Script khởi động server qua stdio đúng như Claude làm, liệt kê 6 tool và gọi `list_systems`. Nó không chạm vào DB, nên chỉ chứng minh server lên được và cấu hình đọc được. Nếu in `Tool: describe_table, explain_query, ...` và danh sách hệ thống thì ổn. Nếu lỗi, thông báo của server nằm ngay phía trên dòng gợi ý.
@@ -113,6 +163,16 @@ claude mcp add database \
   -e MCP_DATABASE_HMAC_KEY=... \
   -e CRM_DB_USER=... -e CRM_DB_PASS=... \
   -- /opt/mcp-database/.venv/bin/python -m mcp_database
+```
+
+Trên macOS lệnh y hệt, chỉ thay `/opt/mcp-database` bằng `~/mcp-database` (viết đường dẫn tuyệt đối đầy đủ, ví dụ `/Users/ten-ban/mcp-database`, vì `~` có thể không được mở rộng sau `-e` và `--`). Trên Windows (PowerShell):
+
+```powershell
+claude mcp add database `
+  -e MCP_DATABASE_CONFIG=C:\mcp-database\systems.yaml `
+  -e MCP_DATABASE_HMAC_KEY=... `
+  -e CRM_DB_USER=... -e CRM_DB_PASS=... `
+  -- C:\mcp-database\.venv\Scripts\python.exe -m mcp_database
 ```
 
 Mặc định lệnh này ghi vào phạm vi `local` (chỉ project hiện tại, chỉ bạn). Dùng `-s user` nếu muốn mọi project của bạn đều thấy. Có một điểm yếu: giá trị truyền bằng `-e` nằm nguyên văn trong file cấu hình của Claude Code (`~/.claude.json`), kể cả mật khẩu DB và khóa HMAC. Chấp nhận được trên máy cá nhân, không nên cho môi trường dùng chung. Cách tốt hơn ở bên dưới.
@@ -141,6 +201,53 @@ claude mcp add database -- /opt/mcp-database/chay-mcp.sh
 ```
 
 Từ đây không còn bí mật nào trong cấu hình của Claude Code, và đổi mật khẩu chỉ là sửa một file.
+
+### Script bọc trên macOS và Windows
+
+macOS dùng được đúng cách của Linux ở trên, chỉ khác đường dẫn: đặt file biến môi trường ở `~/.config/mcp-database/env` (`chmod 600`), script ở `~/mcp-database/chay-mcp.sh` (`chmod 755`), và đăng ký bằng đường dẫn tuyệt đối tới script. Muốn không để bí mật nằm trong file nào cả, cất vào Keychain rồi đọc lúc khởi động:
+
+```bash
+# cất một lần (nhập giá trị khi được hỏi, hoặc thay bằng -w '<giá trị>')
+security add-generic-password -a "$USER" -s mcp-database-hmac -w
+security add-generic-password -a "$USER" -s mcp-database-crm-pass -w
+```
+
+```bash
+#!/bin/sh
+# ~/mcp-database/chay-mcp.sh
+export MCP_DATABASE_CONFIG="$HOME/mcp-database/systems.yaml"
+export MCP_DATABASE_HMAC_KEY="$(security find-generic-password -a "$USER" -s mcp-database-hmac -w)"
+export CRM_DB_USER="ten_user_chi_doc"
+export CRM_DB_PASS="$(security find-generic-password -a "$USER" -s mcp-database-crm-pass -w)"
+exec "$HOME/mcp-database/.venv/bin/python" -m mcp_database
+```
+
+Lần đầu macOS có thể hỏi quyền truy cập Keychain cho tiến trình; chọn cho phép.
+
+Windows không có `sh`, nên dùng file `.cmd` (UTF-8 không BOM, không dấu cách thừa quanh dấu `=`). Đặt bí mật trong một file riêng và khóa quyền bằng ACL:
+
+```bat
+:: C:\mcp-database\env.cmd
+set MCP_DATABASE_CONFIG=C:\mcp-database\systems.yaml
+set MCP_DATABASE_HMAC_KEY=...
+set CRM_DB_USER=...
+set CRM_DB_PASS=...
+```
+
+```bat
+:: C:\mcp-database\chay-mcp.cmd
+@echo off
+call C:\mcp-database\env.cmd
+C:\mcp-database\.venv\Scripts\python.exe -m mcp_database
+```
+
+```powershell
+# chỉ tài khoản của bạn được đọc file chứa bí mật
+icacls C:\mcp-database\env.cmd /inheritance:r /grant:r "$($env:USERNAME):(R)"
+claude mcp add database -- cmd /c C:\mcp-database\chay-mcp.cmd
+```
+
+`cmd /c` là cách thông thường để Claude Code trên Windows khởi chạy file `.cmd`. Lưu ý mật khẩu có ký tự đặc biệt của cmd (`%`, `^`, `&`, `|`) cần được thoát trong `env.cmd`; nếu phiền, đặt biến ở mức người dùng bằng `setx CRM_DB_PASS "..."` (lưu trong registry của tài khoản, mở lại terminal mới có hiệu lực) rồi đăng ký thẳng `python.exe` như ở "Cách nhanh" mà không cần `-e` cho các bí mật. Cả hai cách này đều chưa được kiểm trên máy Windows ở dự án này.
 
 ### Dùng chung trong nhóm qua `.mcp.json`
 
@@ -200,20 +307,44 @@ Bốn tool này không trả dữ liệu dòng nên cho chạy không hỏi cũn
 
 ### Claude Desktop
 
-Mở file cấu hình (macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`; Windows: `%APPDATA%\Claude\claude_desktop_config.json`) và thêm:
+Mở file cấu hình rồi thêm khối `database` vào `mcpServers`. Claude Desktop cũng có thể mở file này từ Settings, mục Developer, nút Edit Config.
+
+- macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- Windows: `%APPDATA%\Claude\claude_desktop_config.json`
+
+macOS dùng script bọc (đường dẫn tuyệt đối, không dùng `~`):
 
 ```json
 {
   "mcpServers": {
     "database": {
-      "command": "/opt/mcp-database/chay-mcp.sh",
+      "command": "/Users/ten-ban/mcp-database/chay-mcp.sh",
       "args": []
     }
   }
 }
 ```
 
-Khởi động lại Claude Desktop. Trên Windows không có `sh`, nên dùng trực tiếp `python.exe` trong `.venv\Scripts` với `args: ["-m", "mcp_database"]` và đặt biến môi trường trong khối `env` của cấu hình (giá trị trong đó nằm nguyên văn trong file, nên chỉ dùng cách này trên máy cá nhân). Với dữ liệu thật, ưu tiên Claude Code: bạn kiểm soát được từng lần gọi tool qua phần quyền ở mục trên.
+Windows gọi thẳng `python.exe` của venv (trong JSON phải viết hai dấu `\\` cho mỗi dấu `\`) và đặt biến môi trường trong khối `env`:
+
+```json
+{
+  "mcpServers": {
+    "database": {
+      "command": "C:\\mcp-database\\.venv\\Scripts\\python.exe",
+      "args": ["-m", "mcp_database"],
+      "env": {
+        "MCP_DATABASE_CONFIG": "C:\\mcp-database\\systems.yaml",
+        "MCP_DATABASE_HMAC_KEY": "...",
+        "CRM_DB_USER": "...",
+        "CRM_DB_PASS": "..."
+      }
+    }
+  }
+}
+```
+
+Giá trị trong khối `env` nằm nguyên văn trong file này, nên chỉ dùng cách đó trên máy cá nhân; muốn tránh thì trỏ `command` tới `chay-mcp.cmd` ở mục trên và bỏ khối `env`. Thoát hẳn Claude Desktop rồi mở lại để nó đọc cấu hình mới. Với dữ liệu thật, ưu tiên Claude Code: bạn kiểm soát được từng lần gọi tool qua phần quyền ở mục trên.
 
 ## 6. Kiểm tra trên replica thật
 

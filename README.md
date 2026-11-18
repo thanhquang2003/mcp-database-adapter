@@ -57,7 +57,7 @@ Tạo user DB chỉ đọc (SQL mẫu cho Oracle và MariaDB ở `docs/tham-khao
 
 ```bash
 export MCP_DATABASE_CONFIG=$PWD/systems.yaml
-export MCP_DATABASE_HMAC_KEY=$(openssl rand -hex 32)   # bắt buộc nếu có cột nhạy cảm; cất kỹ
+export MCP_DATABASE_HMAC_KEY=$(python3 -c "import secrets; print(secrets.token_hex(32))")   # bắt buộc nếu có cột nhạy cảm; cất kỹ
 export BILLING_DB_USER=... BILLING_DB_PASS=...         # tên biến do từng profile chọn
 .venv/bin/python scripts/kiem_tra_server.py            # server lên được, thấy đủ 6 tool
 ```
@@ -74,6 +74,40 @@ claude mcp add database \
 Cách này để bí mật nằm nguyên văn trong cấu hình của Claude Code. Cách tốt hơn (file biến môi trường quyền 0600 cộng script bọc, dùng chung trong nhóm qua `.mcp.json`, và cấu hình Claude Desktop) ở `docs/huong-dan.md`.
 
 Rồi hỏi Claude, ví dụ: "Dùng database billing, tìm điểm yếu trong luồng nạp tiền 7 ngày gần nhất. Đọc mô tả dữ liệu trước và chỉ chạy query tổng hợp."
+
+### Cài trên macOS và Windows
+
+Các lệnh ở trên là cho Linux và macOS (bash/zsh). Server chỉ dùng thư viện Python thuần, Oracle chạy ở chế độ thin nên không cần cài Oracle Client, nên mọi hệ điều hành đều cài được.
+
+**macOS (MacBook).** Cài Python và git bằng Homebrew, rồi chạy y hệt các lệnh trên:
+
+```bash
+brew install python@3.12 git
+```
+
+Nếu `python3 --version` báo dưới 3.11, gọi thẳng bản Homebrew (`/opt/homebrew/bin/python3.12` trên Apple Silicon, `/usr/local/bin/python3.12` trên Intel). Dùng đường dẫn tuyệt đối đầy đủ khi đăng ký với Claude (ví dụ `/Users/ten-ban/mcp-database`), đừng dùng `~`.
+
+**Windows.** Dùng PowerShell. Cài Python 3.11+ và git (python.org, git-scm.com, hoặc `winget install Python.Python.3.12 Git.Git`) rồi mở lại PowerShell:
+
+```powershell
+git clone git@github.com:thanhquang2003/mcp-database-adapter.git C:\mcp-database
+cd C:\mcp-database
+py -3.12 -m venv .venv
+.venv\Scripts\python.exe -m pip install -e .
+Copy-Item systems.example.yaml systems.yaml
+
+$env:MCP_DATABASE_CONFIG = "C:\mcp-database\systems.yaml"
+$env:MCP_DATABASE_HMAC_KEY = (py -3 -c "import secrets; print(secrets.token_hex(32))")
+$env:BILLING_DB_USER = "..."; $env:BILLING_DB_PASS = "..."
+.venv\Scripts\python.exe scripts\kiem_tra_server.py
+
+claude mcp add database `
+  -e MCP_DATABASE_CONFIG=C:\mcp-database\systems.yaml `
+  -e MCP_DATABASE_HMAC_KEY=... -e BILLING_DB_USER=... -e BILLING_DB_PASS=... `
+  -- C:\mcp-database\.venv\Scripts\python.exe -m mcp_database
+```
+
+Nếu bạn chạy Claude Code trong WSL thì làm theo phần Linux bên trong WSL. Trên macOS và Windows, mật khẩu không nên để nguyên văn trong cấu hình của Claude: dùng Keychain (macOS) hoặc file `.cmd` bị khóa ACL (Windows), chi tiết và cấu hình Claude Desktop ở `docs/huong-dan.md`, mục 3 và 5. Dự án mới được kiểm với DB thật trên Linux; macOS và Windows chưa được kiểm trực tiếp, nên chạy `scripts/kiem_tra_server.py` trước khi nối Claude.
 
 ## Tài liệu
 
@@ -175,7 +209,7 @@ Create a read-only DB user (sample SQL for Oracle and MariaDB is in `docs/tham-k
 
 ```bash
 export MCP_DATABASE_CONFIG=$PWD/systems.yaml
-export MCP_DATABASE_HMAC_KEY=$(openssl rand -hex 32)   # required if any column is sensitive; keep it secret
+export MCP_DATABASE_HMAC_KEY=$(python3 -c "import secrets; print(secrets.token_hex(32))")   # required if any column is sensitive; keep it secret
 export BILLING_DB_USER=... BILLING_DB_PASS=...         # variable names are chosen per profile
 .venv/bin/python scripts/kiem_tra_server.py            # server starts and exposes all 6 tools
 ```
@@ -192,6 +226,40 @@ claude mcp add database \
 This stores the secrets in plain text in Claude Code's configuration. A better setup (a 0600 environment file plus a wrapper script, sharing the declaration across a team through `.mcp.json`, and Claude Desktop configuration) is in `docs/huong-dan.md`.
 
 Then ask Claude something like: "Using the billing database, find weak points in the top-up flow over the last 7 days. Read the data description first and run aggregate queries only."
+
+### Installing on macOS and Windows
+
+The commands above are for Linux and macOS (bash/zsh). The server uses pure-Python libraries and Oracle runs in thin mode (no Oracle Client needed), so it installs on any operating system.
+
+**macOS (MacBook).** Install Python and git with Homebrew, then run the same commands as above:
+
+```bash
+brew install python@3.12 git
+```
+
+If `python3 --version` reports less than 3.11, call the Homebrew one directly (`/opt/homebrew/bin/python3.12` on Apple Silicon, `/usr/local/bin/python3.12` on Intel). Use full absolute paths when registering with Claude (for example `/Users/your-name/mcp-database`), not `~`.
+
+**Windows.** Use PowerShell. Install Python 3.11+ and git (python.org, git-scm.com, or `winget install Python.Python.3.12 Git.Git`), then reopen PowerShell:
+
+```powershell
+git clone git@github.com:thanhquang2003/mcp-database-adapter.git C:\mcp-database
+cd C:\mcp-database
+py -3.12 -m venv .venv
+.venv\Scripts\python.exe -m pip install -e .
+Copy-Item systems.example.yaml systems.yaml
+
+$env:MCP_DATABASE_CONFIG = "C:\mcp-database\systems.yaml"
+$env:MCP_DATABASE_HMAC_KEY = (py -3 -c "import secrets; print(secrets.token_hex(32))")
+$env:BILLING_DB_USER = "..."; $env:BILLING_DB_PASS = "..."
+.venv\Scripts\python.exe scripts\kiem_tra_server.py
+
+claude mcp add database `
+  -e MCP_DATABASE_CONFIG=C:\mcp-database\systems.yaml `
+  -e MCP_DATABASE_HMAC_KEY=... -e BILLING_DB_USER=... -e BILLING_DB_PASS=... `
+  -- C:\mcp-database\.venv\Scripts\python.exe -m mcp_database
+```
+
+If you run Claude Code inside WSL, follow the Linux steps inside WSL. On macOS and Windows, don't leave the password in plain text in Claude's configuration: use the Keychain (macOS) or an ACL-locked `.cmd` file (Windows). Details, and Claude Desktop configuration, are in `docs/huong-dan.md`, sections 3 and 5. The project has so far been verified against a real database only on Linux; macOS and Windows have not been tested directly, so run `scripts/kiem_tra_server.py` before connecting Claude.
 
 ## Documentation
 

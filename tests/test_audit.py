@@ -102,3 +102,21 @@ def test_dangling_symlink_not_created(tmp_path, capsys):
     AuditLog(link).write({"n": 1})
     assert not target.exists()
     assert "audit" in capsys.readouterr().err
+
+
+def test_platform_without_fchmod_still_writes_first_record(tmp_path, capsys, monkeypatch):
+    """Windows (Python < 3.13) không có os.fchmod: bản ghi đầu tiên không được mất, không cảnh báo."""
+    import os
+    monkeypatch.delattr(os, "fchmod", raising=False)
+    path = tmp_path / "audit.jsonl"
+    log = AuditLog(path)
+    log.write({"n": 1})
+    log.write({"n": 2})
+    assert [e["n"] for e in lines(path)] == [1, 2]
+    assert capsys.readouterr().err == ""
+
+
+def test_lines_end_with_plain_newline(tmp_path):
+    path = tmp_path / "audit.jsonl"
+    AuditLog(path).write({"n": 1})
+    assert path.read_bytes().endswith(b"}\n") and b"\r" not in path.read_bytes()
