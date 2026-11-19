@@ -255,10 +255,27 @@ call "%~dp0env.cmd"
 ```
 
 ```powershell
-# chỉ tài khoản của bạn được đọc file chứa bí mật
-icacls "$env:USERPROFILE\.mcp-database\env.cmd" /inheritance:r /grant:r "${env:USERNAME}:(R)"
+# chỉ tài khoản của bạn được đọc và SỬA file chứa bí mật (M = Modify)
+icacls "$env:USERPROFILE\.mcp-database\env.cmd" /inheritance:r /grant:r "${env:USERNAME}:(M)"
 claude.cmd mcp add database -- cmd /c "$env:USERPROFILE\.mcp-database\chay-mcp.cmd"
 ```
+
+Dùng `(M)` chứ không phải `(R)`. Bản đầu của hướng dẫn này ghi `(R)` (chỉ đọc) và lỗi đó khiến chính bạn không sửa được `env.cmd` sau đó: Notepad hay `echo >` báo "Access is denied", kể cả khi mở bằng quyền Administrator, vì quyền admin không vượt qua một ACL đã tước quyền ghi của chính chủ file.
+
+**Nếu bạn đã chạy lệnh `(R)` và giờ không sửa được file**, mở PowerShell bằng chính tài khoản đã tạo file (không cần Run as administrator) và chạy:
+
+```powershell
+icacls "$env:USERPROFILE\.mcp-database\env.cmd" /grant:r "${env:USERNAME}:(M)"
+```
+
+Chủ file luôn được quyền đổi ACL của chính nó, nên lệnh này chạy được dù hiện tại bạn không ghi được. Nếu vẫn báo "Access is denied" thì file đang thuộc về tài khoản khác (ví dụ lúc trước tạo bằng một cửa sổ admin). Khi đó chạy PowerShell bằng quyền Administrator:
+
+```powershell
+takeown /f "$env:USERPROFILE\.mcp-database\env.cmd"
+icacls "$env:USERPROFILE\.mcp-database\env.cmd" /grant:r "${env:USERNAME}:(M)"
+```
+
+Nếu muốn bỏ hẳn các giới hạn đã đặt và để file kế thừa quyền từ thư mục cha: `icacls "$env:USERPROFILE\.mcp-database\env.cmd" /reset`. Mỗi lần sửa xong, cũng nên kiểm tra file không còn do một tài khoản khác sở hữu: `icacls "$env:USERPROFILE\.mcp-database\env.cmd"` (phải thấy tài khoản của bạn với `(M)`, không thấy `Everyone` hay `Users`).
 
 Khóa HMAC chỉ sinh một lần: đổi khóa thì mọi giá trị băm đổi theo (xem mục Xoay khóa HMAC). Gõ `claude.cmd` thay cho `claude` vì PowerShell mặc định chặn chạy `claude.ps1` ("running scripts is disabled on this system"); `claude.cmd` không bị chặn. Cách khác là cho phép script của người dùng hiện tại một lần: `Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned` (đây là thay đổi cấu hình máy, tự cân nhắc). `cmd /c` là cách thông thường để Claude Code trên Windows khởi chạy file `.cmd`. Mật khẩu có `%` hoặc `!` thì đặt biến ở mức người dùng bằng `setx` thay vì `env.cmd`. Cách đăng ký bằng `env.cmd` + `chay-mcp.cmd` ở trên đã được xác nhận chạy được trên Windows; cách `setx` thì chưa được thử.
 
